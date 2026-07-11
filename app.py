@@ -324,7 +324,7 @@ def parse_scans_for_program(log_lines, prog_id):
 # ──────────────────────────────────────────────
 
 def refresh_data():
-    global cached_data, _ltp_last_fetch, _kite_session
+    global cached_data, _ltp_last_fetch, _kite_positions_last_fetch, _kite_session
     while True:
         with data_lock:
             pos = load_positions()
