@@ -1,0 +1,24 @@
+{
+  "api_key": "o8nnw6kxykvrsrhg",
+  "api_secret": "9g7d5kktr38d7yvq11njsm4upz8kc6s1",
+  "daily": {
+    "timeframe": "day",
+    "lookback_days": 500
+  },
+  "_backtest": false,
+  "index": {
+    "timeframe": "15minute",
+    "lookback_days": 100,
+    "scan_interval": 15,
+    "risk_percent": 1,
+    "capital": 100000,
+    "strike_range": 2
+  },
+  "nifty50": {
+    "timeframe": "15minute",
+    "lookback_days": 200,
+    "scan_interval": 30,
+    "risk_percent": 10,
+    "capital": 100000
+  }
+}

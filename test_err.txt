@@ -1,0 +1,17 @@
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5050
+ * Running on http://192.168.1.6:5050
+Press CTRL+C to quit
+Exception in thread Thread-1 (refresh_data):
+Traceback (most recent call last):
+  File "C:\Users\NEW\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "C:\Users\NEW\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "G:\Poovendan\AI\Trading\Share\ReadyToDeploy\Prod_code_01\app.py", line 374, in refresh_data
+    if now - _kite_positions_last_fetch > 60:
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnboundLocalError: cannot access local variable '_kite_positions_last_fetch' where it is not associated with a value

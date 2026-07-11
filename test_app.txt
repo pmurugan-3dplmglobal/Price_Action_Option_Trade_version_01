@@ -1,0 +1,8 @@
+Trading Control Center starting on http://localhost:5050
+Refresh interval: 5s
+Available programs:
+  [index] Index Trade Engine (Nifty & BankNifty)
+  [nifty50] Nifty 50 Stock Scanner + Executor
+  [daily] Nifty 50 Daily Scanner (Export)
+ * Serving Flask app 'app'
+ * Debug mode: off
