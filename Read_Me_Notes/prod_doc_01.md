@@ -359,10 +359,9 @@ Win rate = targetHits / (slHits + targetHits) × 100
 - If multiple trades exist for same symbol (e.g., BANKNIFTY with different strikes), only last one survives
 - Consider changing to `dict[trade_id]` or allowing list per symbol
 
-### 4. Kite position recovery uses wrong API field
-- `p["net_quantity"]` doesn't exist in Kite API response
-- Should use `p.get("quantity", 0)` or correct field name
-- Currently errors out silently, no positions recovered on restart
+### 4. ~~Kite position recovery uses wrong API field~~ ✅ FIXED
+- ~~`p["net_quantity"]` doesn't exist in Kite API response~~ → Changed all `net_quantity` to `quantity` (correct Kite API field) across `app.py`, `bull_index_trade_engine.py`, and `bull_nifty50_scanner_executor.py`
+- Kite positions now appear in Active Positions on the dashboard
 
 ### 5. Dashboard: Active Positions reads stale backtest trades
 - `load_positions()` → `trade_db.get_active_trades()` returns ALL ACTIVE trades including stale backtest orphans

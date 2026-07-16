@@ -7,15 +7,15 @@
   },
   "_backtest": false,
   "index": {
-    "timeframe": "15minute",
+    "timeframe": "3minute",
     "lookback_days": 100,
     "scan_interval": 15,
     "risk_percent": 1,
     "capital": 100000,
-    "strike_range": 2
+    "strike_range": 1
   },
   "nifty50": {
-    "timeframe": "15minute",
+    "timeframe": "30minute",
     "lookback_days": 200,
     "scan_interval": 30,
     "risk_percent": 10,

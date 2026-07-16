@@ -28,6 +28,10 @@ JOURNAL_FILE = "output/monitor/trade_journal.csv"
 INDEX_LOG_FILE = "output/logs/bull_index_trade_engine.log"
 NIFTY50_LOG_FILE = "output/logs/bull_nifty50_scanner.log"
 DAILY_LOG_FILE = "output/logs/bull_daily_scanner.log"
+SCAN_DISPLAY_FILE = "output/monitor/scan_display_data.json"
+SCAN_DISPLAY_INDEX_FILE = "output/monitor/scan_display_index.json"
+LIVE_EXECUTION_FLAG = "input/nifty50_live.flag"
+LIVE_EXECUTION_FLAG_INDEX = "input/index_live.flag"
 
 DASHBOARD_PORT = 5050
 REFRESH_SECONDS = 5
@@ -90,7 +94,10 @@ cached_data = {
     "all_trades": [],
     "kite_positions": [],
     "ltp": {},
-    "anchor_status": {"running": False, "engine": None, "requested_at": None, "completed_at": None}
+    "anchor_status": {"running": False, "engine": None, "requested_at": None, "completed_at": None},
+    "scan_display": {"date": "", "timestamp": "", "staged_trades": [], "active_positions": []},
+    "live_execution": False,
+    "live_execution_index": False
 }
 _ltp_last_fetch = 0
 _kite_positions_last_fetch = 0
@@ -344,6 +351,22 @@ def refresh_data():
                 scan_lines, anchors, abc_matches = parse_scans_for_program(log_lines, pid)
                 cached_data["scans"][pid] = scan_lines
                 cached_data["scan_summary"][pid] = {"anchors": anchors, "abc_matches": abc_matches}
+            scan_display = {}
+            try:
+                if os.path.exists(SCAN_DISPLAY_FILE):
+                    with open(SCAN_DISPLAY_FILE, "r") as f:
+                        scan_display["nifty50"] = json.load(f)
+            except Exception:
+                pass
+            try:
+                if os.path.exists(SCAN_DISPLAY_INDEX_FILE):
+                    with open(SCAN_DISPLAY_INDEX_FILE, "r") as f:
+                        scan_display["index"] = json.load(f)
+            except Exception:
+                pass
+            cached_data["scan_display"] = scan_display
+            cached_data["live_execution"] = os.path.exists(LIVE_EXECUTION_FLAG)
+            cached_data["live_execution_index"] = os.path.exists(LIVE_EXECUTION_FLAG_INDEX)
             now = time.time()
             if now - _ltp_last_fetch > 30 and cached_data["all_trades"]:
                 _ltp_last_fetch = now
@@ -392,7 +415,7 @@ def refresh_data():
                             if not sym or sym in seen_symbols:
                                 continue
                             seen_symbols.add(sym)
-                            qty = abs(int(p.get("net_quantity", 0)))
+                            qty = abs(int(p.get("quantity", 0)))
                             if qty == 0:
                                 continue
                             merged.append({
@@ -431,6 +454,7 @@ HTML_TEMPLATE = """
             document.getElementById(tabId).classList.add('active');
             event.target.classList.add('active');
             if (tabId === 'backtest-tab') renderBacktest();
+            if (tabId === 'scan-tab-left') renderScanTab();
         }
 
         function switchTab(tabId) {
@@ -459,6 +483,70 @@ HTML_TEMPLATE = """
                 });
                 refreshBacktestMode();
             } catch(e) { console.log(e); }
+        }
+
+        // ── Live Execution Toggle ──
+        async function toggleLiveExecution(engine) {
+            const isIndex = engine === 'index';
+            const tgl = document.getElementById(isIndex ? 'live-exec-toggle-idx' : 'live-exec-toggle');
+            const lbl = document.getElementById(isIndex ? 'live-exec-label-idx' : 'live-exec-label');
+            const was = tgl.classList.contains('active');
+            const ep = isIndex ? '/api/live-execution/index' : '/api/live-execution/nifty50';
+            try {
+                const r = await fetch(ep, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: !was})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    tgl.classList.toggle('active', d.enabled);
+                    const label = isIndex ? 'IDX' : 'N50';
+                    lbl.textContent = d.enabled ? label+': ON' : label+': OFF';
+                    lbl.style.color = d.enabled ? '#3fb950' : '#8b949e';
+                }
+            } catch(e) { console.log(e); }
+        }
+
+        async function toggleCardLive(pid) {
+            const ep = '/api/live-execution/' + pid;
+            const sw = document.getElementById('live-toggle-' + pid);
+            const lb = document.getElementById('live-label-' + pid);
+            const was = sw.classList.contains('on');
+            try {
+                const r = await fetch(ep, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: !was})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    sw.classList.toggle('on', d.enabled);
+                    lb.textContent = d.enabled ? 'LIVE' : 'SCAN';
+                    lb.style.color = d.enabled ? '#3fb950' : '#8b949e';
+                }
+            } catch(e) { console.log(e); }
+        }
+
+        function refreshLiveExec() {
+            const d = window._lastData;
+            if (!d) return;
+            const enabled = d.live_execution || false;
+            const enabledIdx = d.live_execution_index || false;
+            const tgl = document.getElementById('live-exec-toggle');
+            const lbl = document.getElementById('live-exec-label');
+            if (tgl) {
+                tgl.classList.toggle('active', enabled);
+                lbl.textContent = enabled ? 'N50: ON' : 'N50: OFF';
+                lbl.style.color = enabled ? '#3fb950' : '#8b949e';
+            }
+            const tglIdx = document.getElementById('live-exec-toggle-idx');
+            const lblIdx = document.getElementById('live-exec-label-idx');
+            if (tglIdx) {
+                tglIdx.classList.toggle('active', enabledIdx);
+                lblIdx.textContent = enabledIdx ? 'IDX: ON' : 'IDX: OFF';
+                lblIdx.style.color = enabledIdx ? '#3fb950' : '#8b949e';
+            }
         }
 
         // ── Program Start/Stop ──
@@ -539,6 +627,124 @@ HTML_TEMPLATE = """
             rows.forEach(r => tbody.appendChild(r));
         }
 
+        // ── Global Edit State & Scan Tab Render ──
+        let editStates = {};
+        function renderScanTab() {
+            const d = window._lastData;
+            if (!d) return;
+            const sd = d.scan_display || {};
+            const filter = (document.getElementById('scan-engine-filter') || {}).value || 'all';
+            let scanHtml = '';
+            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">EntryTime</th><th onclick="sortTable(this,9)">ExitTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th><th>Act</th>';
+            function tradeRow(t, resultBadge, showEdit) {
+                const entry = t.entry_spot !== undefined && t.entry_spot !== null ? parseFloat(t.entry_spot).toFixed(2) : '-';
+                const sl = t.current_sl !== undefined && t.current_sl !== null ? parseFloat(t.current_sl).toFixed(2) : '-';
+                const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '-';
+                const t2v = t.t2 !== undefined && t.t2 !== null ? t.t2 : '-';
+                const t3v = t.t3 !== undefined && t.t3 !== null ? t.t3 : '-';
+                const et = t.entry_time || '-';
+                const ext = t.exit_time || '-';
+                const res = t.result || '-';
+                const cf = t.carry_forward ? 'Yes' : 'No';
+                const rr = t.rr !== undefined && t.rr !== null ? parseFloat(t.rr).toFixed(2) : '0.00';
+                const uid = (t.symbol || '') + '_' + (showEdit || '');
+                const es = editStates[uid];
+                let editCols = '';
+                if (es && es.active) {
+                    editCols = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px"></td><td><input id="t1_${uid}" value="${es.t1}" style="width:60px"></td>`;
+                    editCols += `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${showEdit || ''}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
+                } else {
+                    editCols = `<td>${sl}</td><td>${t1v}</td>`;
+                    if (showEdit) {
+                        editCols += `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${sl}','${t1v}')">Edit</button></td>`;
+                    } else {
+                        editCols += `<td></td>`;
+                    }
+                }
+                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td>${editCols}<td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${et}</td><td style="font-size:11px">${ext}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td></tr>`;
+            }
+            const engines = filter === 'all' ? ['nifty50', 'index'] : [filter];
+            engines.forEach(eng => {
+                const data = sd[eng];
+                if (!data) return;
+                const staged = data.staged_trades || [];
+                const carryFwd = data.carry_forward || [];
+                const activeLive = data.active_live || [];
+                const engLabel = eng === 'nifty50' ? 'Nifty 50' : 'Index';
+                if (staged.length) {
+                    scanHtml += '<div class="scan-section-title">[' + engLabel + '] Scan Results (' + staged.length + ')</div>';
+                    scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
+                    staged.forEach(t => { scanHtml += tradeRow(t, 'badge-open', ''); });
+                    scanHtml += '</tbody></table></div>';
+                }
+                if (carryFwd.length) {
+                    scanHtml += '<div class="scan-section-title">[' + engLabel + '] Carry Forward (' + carryFwd.length + ')</div>';
+                    scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
+                    carryFwd.forEach(t => { scanHtml += tradeRow(t, 'badge-open', eng); });
+                    scanHtml += '</tbody></table></div>';
+                }
+                if (activeLive.length) {
+                    scanHtml += '<div class="scan-section-title">[' + engLabel + '] Active (Live) (' + activeLive.length + ')</div>';
+                    scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
+                    activeLive.forEach(t => {
+                        const res = t.result || 'ACTIVE';
+                        const rBadge = res === 'ACTIVE' ? 'badge-open' : (res === 'SL_HIT' ? 'badge-loss' : 'badge-profit');
+                        scanHtml += tradeRow(t, rBadge, eng);
+                    });
+                    scanHtml += '</tbody></table></div>';
+                }
+            });
+            if (!scanHtml) {
+                scanHtml = '<p class="empty-state">No scan trades yet. Run a scan cycle or wait for next cycle.</p>';
+            } else {
+                const ts = Object.values(sd).map(v => v.timestamp).filter(Boolean).sort().pop() || '-';
+                scanHtml += '<div style="padding:6px 14px;font-size:11px;color:#8b949e">Last updated: ' + ts + '</div>';
+            }
+            document.getElementById('scan-body').innerHTML = scanHtml;
+        }
+
+        function showToast(msg, type) {
+            const c = document.getElementById('toast-container');
+            if (!c) return;
+            const t = document.createElement('div');
+            t.className = 'toast toast-' + type;
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2500);
+        }
+        function editRow(uid, symbol, sl, t1) {
+            editStates[uid] = {active: true, sl: sl, t1: t1};
+            renderScanTab(); renderReport();
+        }
+        function cancelEdit(uid) {
+            delete editStates[uid];
+            renderScanTab(); renderReport();
+        }
+        async function saveEdit(uid, symbol, engine) {
+            const es = editStates[uid];
+            if (!es) return;
+            const newSl = document.getElementById('sl_'+uid)?.value;
+            const newT1 = document.getElementById('t1_'+uid)?.value;
+            if (!newSl || !newT1) return;
+            delete editStates[uid];
+            try {
+                const r = await fetch('/api/update-position', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({engine: engine, symbol: symbol, current_sl: parseFloat(newSl), t1: parseFloat(newT1)})
+                });
+                const j = await r.json();
+                if (j.ok) {
+                    showToast(`SL/T1 updated for ${symbol}`, 'success');
+                } else {
+                    showToast(`Failed: ${j.error || 'unknown'}`, 'error');
+                }
+            } catch(e) {
+                showToast(`Network error: ${e.message}`, 'error');
+            }
+            refreshData();
+        }
+
         // ── Main Dashboard Render ──
         function renderReport() {
             const d = window._lastData;
@@ -585,6 +791,14 @@ HTML_TEMPLATE = """
                     status: 'ACTIVE',
                     source: 'kite'
                 });
+                const dbMatch = allTrades.find(t => (t.contract || t.symbol) === kp.contract);
+                if (dbMatch) {
+                    const last = mergedPositions[mergedPositions.length - 1];
+                    last.current_sl = dbMatch.current_sl;
+                    last.t1 = dbMatch.t1;
+                    last.t2 = dbMatch.t2;
+                    last.t3 = dbMatch.t3;
+                }
             });
             allTrades.forEach(t => {
                 const contract = t.contract || t.symbol || '';
@@ -597,11 +811,11 @@ HTML_TEMPLATE = """
                     symbol: t.symbol || contract,
                     engine: (t.engine === 'index' || (t.symbol||'').includes('NIFTY') || (t.symbol||'').includes('BANK')) ? 'Index' : 'Nifty 50',
                     pattern: t.pattern || '',
-                    entry_spot: t.entry_spot || '',
-                    current_sl: t.current_sl || '',
-                    t1: t.t1 || '',
-                    t2: t.t2 || '',
-                    t3: t.t3 || '',
+                    entry_spot: t.entry_spot !== undefined && t.entry_spot !== null ? t.entry_spot : '',
+                    current_sl: t.current_sl !== undefined && t.current_sl !== null ? t.current_sl : '',
+                    t1: t.t1 !== undefined && t.t1 !== null ? t.t1 : '',
+                    t2: t.t2 !== undefined && t.t2 !== null ? t.t2 : '',
+                    t3: t.t3 !== undefined && t.t3 !== null ? t.t3 : '',
                     status: t.status || 'ACTIVE',
                     created_at: t.created_at || '',
                     exit_time: t.exit_time || '',
@@ -611,7 +825,7 @@ HTML_TEMPLATE = """
                 });
             });
             if (mergedPositions.length) {
-                posHtml = '<table><thead><tr><th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Source</th><th onclick="sortTable(this,2)">Pattern</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">LTP</th><th onclick="sortTable(this,9)">Qty</th><th onclick="sortTable(this,10)">Status</th><th onclick="sortTable(this,11)">P&L</th></tr></thead><tbody>';
+                posHtml = '<table><thead><tr><th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Source</th><th onclick="sortTable(this,2)">Pattern</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">LTP</th><th onclick="sortTable(this,9)">Qty</th><th onclick="sortTable(this,10)">Status</th><th onclick="sortTable(this,11)">P&L</th><th>Act</th></tr></thead><tbody>';
                 mergedPositions.forEach(t => {
                     const st = (t.status || '').toLowerCase();
                     let badge = 'badge-open';
@@ -622,12 +836,29 @@ HTML_TEMPLATE = """
                     const pnlBadge = pnl !== '' ? (pnl >= 0 ? 'badge-profit' : 'badge-loss') : '';
                     const ltpVal = t.token ? (ltpData[t.token] || '') : '';
                     const qty = t.quantity || '';
-                    const slVal = t.current_sl || '';
-                    const t1v = t.t1 || '';
-                    const t2v = t.t2 || '';
-                    const t3v = t.t3 || '';
-                    const entryVal = t.entry_spot || '';
-                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td><td>${slVal}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td></tr>`;
+                    const slVal = t.current_sl !== undefined && t.current_sl !== null ? t.current_sl : '';
+                    const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '';
+                    const t2v = t.t2 !== undefined && t.t2 !== null ? t.t2 : '';
+                    const t3v = t.t3 !== undefined && t.t3 !== null ? t.t3 : '';
+                    const entryVal = t.entry_spot !== undefined && t.entry_spot !== null ? t.entry_spot : '';
+                    const uid = 'pos_' + (t.symbol || 'no_sym') + '_' + (t.source || '');
+                    const es = editStates[uid];
+                    let slCell, t1Cell, actCell;
+                    if (es && es.active) {
+                        slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px"></td>`;
+                        t1Cell = `<td><input id="t1_${uid}" value="${es.t1}" style="width:60px"></td>`;
+                        actCell = `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${t.engine === 'Index' ? 'index' : 'nifty50'}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
+                    } else {
+                        slCell = `<td>${slVal}</td>`;
+                        t1Cell = `<td>${t1v}</td>`;
+                        const canEdit = st === 'active';
+                        if (canEdit) {
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}')">Edit</button></td>`;
+                        } else {
+                            actCell = `<td></td>`;
+                        }
+                    }
+                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}<td>${t2v}</td><td>${t3v}</td><td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td>${actCell}</tr>`;
                 });
                 posHtml += '</tbody></table>';
             } else {
@@ -671,40 +902,7 @@ HTML_TEMPLATE = """
                 jHtml = '<p class="empty-state">No journal entries yet</p>';
             }
             document.getElementById('journal-body').innerHTML = jHtml;
-
-            let scanHtml = '';
-            let allSetups = {};
-            const engines = scanFilter === 'all' ? ['index', 'nifty50', 'daily'] : [scanFilter];
-            engines.forEach(pid => {
-                const summary = d.programs?.[pid]?.scan_summary;
-                if (!summary) return;
-                Object.keys(summary.anchors || {}).forEach(sym => {
-                    if (!allSetups[sym]) allSetups[sym] = {anchor: summary.anchors[sym], abc: null};
-                    else allSetups[sym].anchor = summary.anchors[sym];
-                });
-                Object.keys(summary.abc_matches || {}).forEach(sym => {
-                    if (!allSetups[sym]) allSetups[sym] = {anchor: null, abc: summary.abc_matches[sym]};
-                    else allSetups[sym].abc = summary.abc_matches[sym];
-                });
-            });
-            Object.entries(allSetups).forEach(([sym, info]) => {
-                if (info.anchor && info.abc) {
-                    scanHtml += '<div class="match-highlight" style="border-left-color:#3fb950;background:#3fb95015"><strong>SETUP FORMED</strong>: ' + sym + ' | Anchor: ' + info.anchor.split('|').pop().trim() + ' | ABC: ' + info.abc.split('|').pop().trim() + '</div>';
-                } else if (info.anchor) {
-                    scanHtml += '<div class="match-highlight" style="border-left-color:#d29922">ANCHOR: ' + info.anchor.split('|').pop().trim() + '</div>';
-                } else if (info.abc) {
-                    scanHtml += '<div class="match-highlight" style="border-left-color:#58a6ff">ABC: ' + info.abc.split('|').pop().trim() + '</div>';
-                }
-            });
-            if (!scanHtml) {
-                const allScans = [];
-                engines.forEach(pid => {
-                    allScans.push(...(d.programs?.[pid]?.scans || []));
-                });
-                allScans.forEach(l => { scanHtml += '<div class="match-highlight">'+l+'</div>'; });
-                if (!scanHtml) scanHtml = '<p class="empty-state">No scan matches yet</p>';
-            }
-            document.getElementById('scan-body').innerHTML = scanHtml;
+            renderScanTab();
 
             let logHtml = '';
             let allLogs = [];
@@ -719,6 +917,7 @@ HTML_TEMPLATE = """
             const logBox = document.getElementById('log-body');
             logBox.scrollTop = logBox.scrollHeight;
 
+            refreshLiveExec();
             document.getElementById('last-updated').textContent = 'Last refreshed: ' + new Date().toLocaleString();
         }
 
@@ -815,6 +1014,28 @@ HTML_TEMPLATE = """
                         if (seenAlerts.size > 200) seenAlerts.clear();
                         showAlert(pid + ': ' + line.split('[ERROR]')[1] || line);
                     });
+                }
+
+                let logHtml = '';
+                let allLogs = [];
+                const lf = logFilter || 'all';
+                if (lf === 'all' || lf === 'index') {
+                    allLogs = allLogs.concat(d.programs?.index?.log_tail || []);
+                }
+                if (lf === 'all' || lf === 'nifty50') {
+                    allLogs = allLogs.concat(d.programs?.nifty50?.log_tail || []);
+                }
+                allLogs.forEach(l => { logHtml += '<div>'+l.replace(/</g,'&lt;').replace(/>/g,'&gt;')+'</div>'; });
+                document.getElementById('log-body').innerHTML = logHtml || '<p class="empty-state">Waiting for log data...</p>';
+                const logBox = document.getElementById('log-body');
+                if (logBox) logBox.scrollTop = logBox.scrollHeight;
+
+                for (const pid of ['index', 'nifty50']) {
+                    const enabled = pid === 'index' ? d.live_execution_index : d.live_execution;
+                    const sw = document.getElementById('live-toggle-' + pid);
+                    const lb = document.getElementById('live-label-' + pid);
+                    if (sw) { sw.classList.toggle('on', !!enabled); }
+                    if (lb) { lb.textContent = enabled ? 'LIVE' : 'SCAN'; lb.style.color = enabled ? '#3fb950' : '#8b949e'; }
                 }
                 renderReport();
                 refreshTokenStatus();
@@ -1011,6 +1232,14 @@ HTML_TEMPLATE = """
         .prog-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
         .prog-icon { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
         .prog-name { font-weight: 600; font-size: 13px; flex: 1; }
+        .prog-live-toggle { display: flex; align-items: center; gap: 4px; cursor: pointer; padding: 2px 6px; border-radius: 4px; user-select: none; }
+        .prog-live-toggle:hover { background: #1c2128; }
+        .live-label { font-size: 10px; font-weight: 600; color: #8b949e; min-width: 28px; text-align: center; }
+        .live-switch { width: 24px; height: 12px; background: #30363d; border-radius: 6px; position: relative; transition: background 0.2s; }
+        .live-switch::after { content: ''; position: absolute; top: 1px; left: 1px; width: 10px; height: 10px; background: #8b949e; border-radius: 50%; transition: all 0.2s; }
+        .live-switch.on { background: #238636; }
+        .live-switch.on::after { left: 13px; background: #fff; }
+        .live-switch.on + .live-label { color: #3fb950; }
         .prog-desc { font-size: 11px; color: #8b949e; margin-bottom: 10px; }
         .prog-footer { display: flex; align-items: center; justify-content: space-between; }
 
@@ -1105,6 +1334,23 @@ HTML_TEMPLATE = """
         .log-box { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px; font-family: 'Consolas', monospace; font-size: 11px; max-height: 400px; overflow-y: auto; line-height: 1.5; }
         .log-box div:nth-child(odd) { background: #161b22; }
         .match-highlight { background: #1f6feb11; border-left: 3px solid #58a6ff; padding: 2px 8px; margin: 2px 0; font-family: 'Consolas', monospace; font-size: 11px; }
+        .toggle-wrap { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+        .toggle-switch { position: relative; width: 40px; height: 20px; background: #30363d; border-radius: 10px; cursor: pointer; transition: 0.2s; }
+        .toggle-switch.active { background: #3fb950; }
+        .toggle-switch::after { content: ''; position: absolute; width: 16px; height: 16px; border-radius: 50%; background: #fff; top: 2px; left: 2px; transition: 0.2s; }
+        .toggle-switch.active::after { left: 22px; }
+        .scan-section-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #8b949e; padding: 8px 14px 4px; }
+        .btn-edit { background: #1f6feb33; color: #58a6ff; border: 1px solid #1f6feb66; border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer; }
+        .btn-edit:hover { background: #1f6feb66; }
+        .btn-edit-save { background: #3fb95033; color: #3fb950; border: 1px solid #3fb95066; border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer; margin-right: 4px; }
+        .btn-edit-save:hover { background: #3fb95066; }
+        .btn-edit-cancel { background: #f8514933; color: #f85149; border: 1px solid #f8514966; border-radius: 4px; padding: 2px 8px; font-size: 10px; cursor: pointer; }
+        .btn-edit-cancel:hover { background: #f8514966; }
+        .toast-container { position: fixed; top: 16px; right: 16px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+        .toast { padding: 10px 16px; border-radius: 8px; font-size: 13px; color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.3); animation: toast-in 0.3s ease; }
+        .toast-success { background: #3fb950; }
+        .toast-error { background: #f85149; }
+        @keyframes toast-in { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
 
         .alert-toast { position: fixed; top: 12px; right: 12px; z-index: 9999; max-width: 420px; background: #f85149; color: #fff; padding: 10px 14px; border-radius: 8px; font-size: 12px; display: flex; align-items: flex-start; gap: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); transform: translateX(120%); opacity: 0; transition: all 0.4s; }
         .alert-toast.show { transform: translateX(0); opacity: 1; }
@@ -1124,6 +1370,7 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
+    <div class="toast-container" id="toast-container"></div>
     <h1>Trading Control Center <small>Steering & Dashboard</small></h1>
 
     <div id="token-banner" class="token-banner token-hidden">
@@ -1180,6 +1427,12 @@ HTML_TEMPLATE = """
             <div class="prog-header">
                 <span class="prog-icon" style="background:{{ prog.color }}"></span>
                 <span class="prog-name">{{ prog.name }}</span>
+                {% if pid != 'daily' %}
+                <div class="prog-live-toggle" onclick="event.stopPropagation();toggleCardLive('{{ pid }}')">
+                    <span id="live-label-{{ pid }}" class="live-label">SCAN</span>
+                    <span id="live-toggle-{{ pid }}" class="live-switch"></span>
+                </div>
+                {% endif %}
                 <div class="status-group">
                     <span class="status-dot closed"></span>
                     <span class="status-label closed">Closed</span>
@@ -1227,6 +1480,7 @@ HTML_TEMPLATE = """
         <div class="reports-left">
             <div class="left-tab-bar">
                 <button class="left-tab-btn active" onclick="switchLeftTab('active-pos-tab')">Live Positions</button>
+                <button class="left-tab-btn" onclick="switchLeftTab('scan-tab-left')">Scan Matches</button>
                 <button class="left-tab-btn" onclick="switchLeftTab('backtest-tab')">Backtest Summary</button>
                 <div style="display:flex;align-items:center;gap:6px;margin-left:auto;padding:0 10px;">
                     <label class="toggle-label" title="Toggle backtest mode">
@@ -1251,6 +1505,29 @@ HTML_TEMPLATE = """
                     <div id="active-positions-body"><p class="empty-state">No positions</p></div>
                 </div>
             </div>
+            <div id="scan-tab-left" class="left-tab-content">
+                <div class="section-panel">
+                    <div class="section-header">
+                        <span>Trade Details</span>
+                        <div style="display:flex;gap:12px;align-items:center">
+                            <div class="toggle-wrap">
+                                <span id="live-exec-label" style="color:#8b949e;font-size:11px">N50: OFF</span>
+                                <div id="live-exec-toggle" class="toggle-switch" onclick="toggleLiveExecution('nifty50')"></div>
+                            </div>
+                            <div class="toggle-wrap">
+                                <span id="live-exec-label-idx" style="color:#8b949e;font-size:11px">IDX: OFF</span>
+                                <div id="live-exec-toggle-idx" class="toggle-switch" onclick="toggleLiveExecution('index')"></div>
+                            </div>
+                            <select id="scan-engine-filter" onchange="renderScanTab()" class="filter-select" style="width:auto">
+                                <option value="all">All</option>
+                                <option value="nifty50">Nifty 50</option>
+                                <option value="index">Index</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="scan-body"><p class="empty-state">No scan trades yet</p></div>
+                </div>
+            </div>
             <div id="backtest-tab" class="left-tab-content">
                 <div class="section-panel">
                     <div class="section-header">
@@ -1268,7 +1545,6 @@ HTML_TEMPLATE = """
             <div class="tab-bar">
                 <button class="tab-btn active" onclick="switchTab('log-tab')">Live Log</button>
                 <button class="tab-btn" onclick="switchTab('journal-tab')">Trade Journal</button>
-                <button class="tab-btn" onclick="switchTab('scan-tab')">Scan Matches</button>
             </div>
             <div id="log-tab" class="tab-content active">
                 <div class="section-panel">
@@ -1295,18 +1571,6 @@ HTML_TEMPLATE = """
                         </select>
                     </div>
                     <div id="journal-body"><p class="empty-state">No journal entries yet</p></div>
-                </div>
-            </div>
-            <div id="scan-tab" class="tab-content">
-                <div class="section-panel">
-                    <div class="section-header"><span>Scan Matches</span>
-                        <select onchange="setFilter('scan',this.value)" class="filter-select">
-                            <option value="all">All</option>
-                            <option value="index">Index</option>
-                            <option value="nifty50">Nifty 50</option>
-                        </select>
-                    </div>
-                    <div id="scan-body"><p class="empty-state">No scan matches yet</p></div>
                 </div>
             </div>
         </div>
@@ -1346,7 +1610,10 @@ def api_status():
             "ltp": cached_data["ltp"],
             "journal": cached_data["journal"],
             "stats": cached_data["stats"],
-            "config": cfg
+            "config": cfg,
+            "scan_display": cached_data["scan_display"],
+            "live_execution": cached_data["live_execution"],
+            "live_execution_index": cached_data["live_execution_index"]
         })
 
 @app.route("/api/token/check")
@@ -1477,6 +1744,80 @@ def api_trades():
 def api_export_monthly():
     result = run_monthly_export()
     return jsonify({"ok": True, **result})
+
+@app.route("/api/live-execution/nifty50", methods=["GET", "POST"])
+def api_live_execution():
+    if request.method == "POST":
+        enabled = request.get_json(force=True, silent=True).get("enabled", False)
+        flag_path = os.path.join(BASE_DIR, LIVE_EXECUTION_FLAG)
+        if enabled:
+            with open(flag_path, "w") as f:
+                f.write("1")
+        else:
+            if os.path.exists(flag_path):
+                os.remove(flag_path)
+        with data_lock:
+            cached_data["live_execution"] = enabled
+        return jsonify({"ok": True, "enabled": enabled})
+    return jsonify({"enabled": os.path.exists(os.path.join(BASE_DIR, LIVE_EXECUTION_FLAG))})
+
+@app.route("/api/live-execution/index", methods=["GET", "POST"])
+def api_live_execution_index():
+    if request.method == "POST":
+        enabled = request.get_json(force=True, silent=True).get("enabled", False)
+        flag_path = os.path.join(BASE_DIR, LIVE_EXECUTION_FLAG_INDEX)
+        if enabled:
+            with open(flag_path, "w") as f:
+                f.write("1")
+        else:
+            if os.path.exists(flag_path):
+                os.remove(flag_path)
+        with data_lock:
+            cached_data["live_execution_index"] = enabled
+        return jsonify({"ok": True, "enabled": enabled})
+    return jsonify({"enabled": os.path.exists(os.path.join(BASE_DIR, LIVE_EXECUTION_FLAG_INDEX))})
+
+SL_TARGET_OVERRIDES_FILE = os.path.join(BASE_DIR, "output", "monitor", "sl_target_overrides.json")
+
+@app.route("/api/update-position", methods=["POST"])
+def api_update_position():
+    data = request.get_json(force=True, silent=True) or {}
+    engine = data.get("engine", "nifty50")
+    symbol = data.get("symbol", "")
+    current_sl = data.get("current_sl")
+    t1 = data.get("t1")
+    if not symbol or current_sl is None or t1 is None:
+        return jsonify({"ok": False, "error": "symbol, current_sl, t1 required"}), 400
+    overrides = {}
+    try:
+        if os.path.exists(SL_TARGET_OVERRIDES_FILE):
+            with open(SL_TARGET_OVERRIDES_FILE) as f:
+                overrides = json.load(f)
+    except Exception:
+        overrides = {}
+    overrides.setdefault(engine, {})[symbol] = {"current_sl": float(current_sl), "t1": float(t1)}
+    os.makedirs(os.path.dirname(SL_TARGET_OVERRIDES_FILE), exist_ok=True)
+    with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
+        json.dump(overrides, f, indent=2)
+    with data_lock:
+        for t in cached_data.get("all_trades", []):
+            t_sym = t.get("contract") or t.get("symbol") or ""
+            if t_sym == symbol:
+                t["current_sl"] = float(current_sl)
+                t["t1"] = float(t1)
+                tid = t.get("id")
+                if tid:
+                    trade_db.update_trade(tid, {"current_sl": float(current_sl), "t1": float(t1)})
+        for pos_list in [cached_data.get("positions", {})]:
+            for pos_key, pos in (pos_list.items() if isinstance(pos_list, dict) else enumerate(pos_list)):
+                if isinstance(pos, dict) and (pos.get("contract") or pos.get("symbol") or "") == symbol:
+                    pos["current_sl"] = float(current_sl)
+                    pos["t1"] = float(t1)
+                    tid = pos.get("id")
+                    if tid:
+                        trade_db.update_trade(tid, {"current_sl": float(current_sl), "t1": float(t1)})
+    logging.info(f"Position override queued: {engine}/{symbol} SL={current_sl} T1={t1}")
+    return jsonify({"ok": True})
 
 EXPORT_STATE_FILE = "output/monitor/export_state.json"
 
