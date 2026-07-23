@@ -75,29 +75,29 @@ def test_all_engines():
             
         # Check if anchor scan request handling exists
         if "ANCHOR_SCAN_REQUEST_FILE" in content:
-            print(f"  ✓ Has anchor scan request file reference")
+            print("  [OK] Has anchor scan request file reference")
         else:
-            print(f"  ✗ Missing anchor scan request file reference")
+            print("  [FAIL] Missing anchor scan request file reference")
             
         # Check if main loop handles anchor scan
         if "os.path.exists(ANCHOR_SCAN_REQUEST_FILE)" in content:
-            print(f"  ✓ Has main loop checking for request file")
+            print("  [OK] Has main loop checking for request file")
         else:
-            print(f"  ✗ Missing main loop check")
+            print("  [FAIL] Missing main loop check")
             
         # Check if execute_anchor_scan is defined or called
         if "def execute_anchor_scan" in content:
-            print(f"  ✓ Has execute_anchor_scan function")
+            print("  [OK] Has execute_anchor_scan function")
         elif "execute_anchor_scan" in content:
-            print(f"  ✓ Has execute_anchor_scan function (partial)")
+            print("  [OK] Has execute_anchor_scan function (partial)")
         else:
-            print(f"  ✗ Missing execute_anchor_scan function")
+            print("  [FAIL] Missing execute_anchor_scan function")
             
         # Check if engine validation exists (should be permissive now)
         if "engine != \"{}\"".format(engine_name) in content and "Anchor scan flag not for" in content:
-            print(f"  ⚠ Has engine validation - needs review")
+            print("  [WARN] Has engine validation - needs review")
         else:
-            print(f"  ✓ No strict engine validation")
+            print("  [OK] No strict engine validation")
 
 
 def show_log_examples():
