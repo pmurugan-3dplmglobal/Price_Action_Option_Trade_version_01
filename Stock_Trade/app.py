@@ -1,4 +1,819 @@
-function renderReport() {
+import os, json, csv, time, threading, subprocess, sys, signal, logging
+from datetime import datetime as dt
+from flask import Flask, render_template_string, jsonify, request, Response
+from kiteconnect import KiteConnect
+import trade_db
+
+app = Flask(__name__)
+
+# ──────────────────────────────────────────────
+#  FILE PATHS & DASHBOARD CONFIG
+# ──────────────────────────────────────────────
+
+
+def get_kite_credentials():
+    """Read Kite API key/secret from config (moved out of source)."""
+    cfg = load_config()
+    api_key = cfg.get("api_key", "")
+    api_secret = cfg.get("api_secret", "")
+    if not api_key or not api_secret:
+        logging.warning("api_key/api_secret missing in program_config.json")
+    return api_key, api_secret
+
+
+TOKEN_FILE = "input/kite_access_token.txt"
+CONFIG_FILE = "input/program_config.json"
+STATE_FILE = "output/monitor/stock_positions_state.json"
+JOURNAL_FILE = "output/monitor/trade_journal.csv"
+INDEX_LOG_FILE = "output/logs/bull_index_trade_engine.log"
+NIFTY50_LOG_FILE = "output/logs/bull_nifty50_scanner.log"
+DAILY_LOG_FILE = "output/logs/bull_daily_scanner.log"
+SCAN_DISPLAY_FILE = "output/monitor/scan_display_data.json"
+SCAN_DISPLAY_INDEX_FILE = "output/monitor/scan_display_index.json"
+LIVE_EXECUTION_FLAG = "input/nifty50_live.flag"
+LIVE_EXECUTION_FLAG_INDEX = "input/index_live.flag"
+
+DASHBOARD_PORT = 5051
+REFRESH_SECONDS = 5
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+PROGRAMS = {
+    "index": {
+        "name": "Index Trade Engine (Nifty & BankNifty)",
+        "file": "bull_index_trade_engine.py",
+        "desc": "Real-time index options intraday trading (3min)",
+        "color": "#58a6ff",
+        "log_file": INDEX_LOG_FILE,
+        "config_fields": {
+            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["minute","3minute","5minute","10minute","15minute","30minute","60minute"], "default": "3minute"},
+            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["15minute","30minute","60minute","day"], "default": "15minute"},
+            "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
+            "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 15},
+            "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
+            "capital": {"label": "Capital", "type": "number", "default": 100000.0},
+            "strike_range": {"label": "Strike Range (±)", "type": "number", "default": 3}
+        }
+    },
+    "nifty50": {
+        "name": "Nifty 50 Stock Scanner + Executor",
+        "file": "bull_nifty50_scanner_executor.py",
+        "desc": "Scans Nifty 50 stocks, picks best setup, executes (15min)",
+        "color": "#3fb950",
+        "log_file": NIFTY50_LOG_FILE,
+        "config_fields": {
+            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["5minute","10minute","15minute","30minute","60minute"], "default": "15minute"},
+            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["15minute","30minute","60minute","day"], "default": "30minute"},
+            "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
+            "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 300},
+            "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
+            "capital": {"label": "Capital", "type": "number", "default": 100000.0}
+        }
+    },
+    "daily": {
+        "name": "Nifty 50 Daily Scanner (Export)",
+        "file": "bull_nifty50_daily_scanner_export.py",
+        "desc": "Scans Nifty 50 on daily timeframe, exports to Excel",
+        "color": "#d29922",
+        "log_file": DAILY_LOG_FILE,
+        "config_fields": {
+            "lookback_days": {"label": "Lookback Days", "type": "number", "default": 120}
+        }
+    }
+}
+
+processes = {}
+process_lock = threading.Lock()
+
+data_lock = threading.Lock()
+cached_data = {
+    "positions": {},
+    "journal": [],
+    "log_tail": {pid: [] for pid in PROGRAMS},
+    "stats": {"total_trades": 0, "win_rate": 0, "active_positions": 0, "pnl": 0},
+    "scans": {"index": [], "nifty50": [], "daily": []},
+    "scan_summary": {"index": {"anchors": {}, "abc_matches": {}}, "nifty50": {"anchors": {}, "abc_matches": {}}, "daily": {"anchors": {}, "abc_matches": {}}},
+    "all_trades": [],
+    "kite_positions": [],
+    "ltp": {},
+    "anchor_status": {"running": False, "engine": None, "requested_at": None, "completed_at": None},
+    "scan_display": {"date": "", "timestamp": "", "staged_trades": [], "active_positions": []},
+    "live_execution": False,
+    "live_execution_index": False
+}
+_ltp_last_fetch = 0
+_kite_positions_last_fetch = 0
+_kite_session = None
+_last_scan_reset = ""
+
+# ──────────────────────────────────────────────
+#  PROCESS MANAGEMENT (Start/Stop Programs)
+# ──────────────────────────────────────────────
+
+def get_pid_for_program(prog_id):
+    with process_lock:
+        p = processes.get(prog_id)
+        if p and p.poll() is None:
+            return p.pid
+    return None
+
+def start_program(prog_id):
+    token = check_token_valid()
+    if not token["valid"]:
+        print(f"Cannot start {prog_id}: {token['reason']}")
+        return False
+    with process_lock:
+        if prog_id in processes and processes[prog_id].poll() is None:
+            return False
+        script_path = os.path.join(BASE_DIR, PROGRAMS[prog_id]["file"])
+        try:
+            p = subprocess.Popen(
+                [sys.executable, script_path],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                cwd=BASE_DIR, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+            )
+            processes[prog_id] = p
+            return True
+        except Exception as e:
+            print(f"Failed to start {prog_id}: {e}")
+            return False
+
+def stop_program(prog_id):
+    with process_lock:
+        p = processes.get(prog_id)
+        if p and p.poll() is None:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
+            else:
+                os.kill(p.pid, signal.SIGTERM)
+            processes.pop(prog_id, None)
+            return True
+    return False
+
+# ──────────────────────────────────────────────
+#  CONFIGURATION (program_config.json)
+# ──────────────────────────────────────────────
+
+def load_config():
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE) as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
+
+def save_config(prog_id, data):
+    cfg = load_config()
+    cleaned = {}
+    for k, v in data.items():
+        if isinstance(v, str):
+            try:
+                if "." in v:
+                    cleaned[k] = float(v)
+                else:
+                    cleaned[k] = int(v)
+            except (ValueError, TypeError):
+                cleaned[k] = v
+        else:
+            cleaned[k] = v
+    cfg[prog_id] = cleaned
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+    return True
+
+def get_backtest_mode():
+    return load_config().get("_backtest", False)
+
+def set_backtest_mode(enabled):
+    cfg = load_config()
+    cfg["_backtest"] = enabled
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+# ──────────────────────────────────────────────
+#  KITE TOKEN MANAGEMENT
+# ──────────────────────────────────────────────
+
+def check_token_valid():
+    if not os.path.exists(TOKEN_FILE):
+        return {"valid": False, "reason": "Token file not found"}
+    try:
+        with open(TOKEN_FILE) as f:
+            data = json.load(f)
+        if not data.get("api_key") or not data.get("access_token"):
+            return {"valid": False, "reason": "Invalid token file"}
+        date_str = data.get("generated_at", "")
+        if date_str:
+            try:
+                from datetime import datetime as dt2
+                gen_date = dt2.strptime(date_str.split()[0], "%Y-%m-%d").date()
+                today = dt.now().date()
+                if gen_date < today:
+                    return {"valid": False, "reason": f"Token expired (generated {date_str})"}
+            except Exception:
+                pass
+        return {"valid": True, "reason": "Token valid"}
+    except Exception as e:
+        return {"valid": False, "reason": f"Token read error: {e}"}
+
+def get_login_url():
+    api_key, _ = get_kite_credentials()
+    kite = KiteConnect(api_key=api_key)
+    return f"https://kite.zerodha.com/connect/login?api_key={api_key}"
+
+def exchange_request_token(request_token):
+    """Exchange Kite request_token for access_token and save to file."""
+    try:
+        api_key, api_secret = get_kite_credentials()
+        kite = KiteConnect(api_key=api_key)
+        session = kite.generate_session(request_token, api_secret=api_secret)
+        access_token = session["access_token"]
+        token_data = {
+            "api_key": api_key,
+            "access_token": access_token,
+            "generated_at": dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+        with open(TOKEN_FILE, "w") as f:
+            json.dump(token_data, f, indent=4)
+        return {"ok": True, "access_token": access_token[:8] + "..."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+# ──────────────────────────────────────────────
+#  DATA LOADING (trade_db, journal, logs)
+# ──────────────────────────────────────────────
+
+def load_positions():
+    try:
+        active = trade_db.get_active_trades()
+        return {t["symbol"]: t for t in active}
+    except:
+        return {}
+
+def load_journal():
+    rows = []
+    if os.path.exists(JOURNAL_FILE):
+        try:
+            with open(JOURNAL_FILE, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f, delimiter="\t")
+                seen = set()
+                for row in reader:
+                    key = (row.get("Symbol", ""), row.get("Timestamp", ""))
+                    if key not in seen:
+                        seen.add(key)
+                        rows.append(row)
+        except Exception:
+            pass
+    return rows[-200:]
+
+def tail_log(filepath, n=200):
+    if not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath, encoding="utf-8") as f:
+            lines = f.readlines()
+        return lines[-n:]
+    except:
+        return []
+
+def compute_stats(positions, journal):
+    active = len(positions)
+    total = len(journal)
+    wins = sum(1 for j in journal if j.get("P&L %", "").replace("%", "").replace("-", "").strip()
+               and j.get("Action", "").startswith("EXIT_"))
+    win_rate = round((wins / total) * 100, 1) if total > 0 else 0
+    pnl = 0.0
+    for j in journal:
+        try:
+            pnl_str = j.get("P&L %", "").replace("%", "")
+            if pnl_str and pnl_str != "-":
+                pnl += float(pnl_str)
+        except Exception:
+            pass
+    return {"total_trades": total, "win_rate": win_rate, "active_positions": active, "pnl": round(pnl, 2)}
+
+SCAN_SYMBOLS = [
+    "RELIANCE","TCS","HDFCBANK","ICICIBANK","INFY","ITC","SBIN","BHARTIARTL","LT","WIPRO",
+    "ADANIENT","ADANIPORTS","APOLLOHOSP","ASIANPAINT","AXISBANK","BAJAJ-AUTO","BAJAJFINSV",
+    "BAJFINANCE","BEL","CIPLA","COALINDIA","DRREDDY","EICHERMOT","ETERNAL","GRASIM","HCLTECH",
+    "HDFCLIFE","HINDALCO","HINDUNILVR","INDIGO","JIOFIN","JSWSTEEL",
+    "KOTAKBANK","M&M","MARUTI","MAXHEALTH","NESTLEIND","NTPC","ONGC","POWERGRID","SBILIFE",
+    "SHRIRAMFIN","SUNPHARMA","TATACONSUM","TMPV","TATASTEEL","TECHM","TITAN","TRENT","ULTRACEMCO",
+    "NIFTY","BANKNIFTY"
+]
+
+# ──────────────────────────────────────────────
+#  SCAN PARSING — Split anchor vs ABC per symbol
+# ──────────────────────────────────────────────
+
+def _extract_symbol(line):
+    for sym in SCAN_SYMBOLS:
+        if sym in line:
+            return sym
+    return None
+
+def parse_scans_for_program(log_lines, prog_id):
+    matches = []
+    anchors = {}
+    abc_matches = {}
+    for line in log_lines:
+        clean = line.strip()
+        if "ANCHOR" in clean:
+            matches.append(clean)
+            sym = _extract_symbol(clean)
+            if sym:
+                anchors[sym] = clean
+        elif "MATCH" in clean or "BEST TRADE" in clean or "Match" in clean:
+            matches.append(clean)
+            sym = _extract_symbol(clean)
+            if sym:
+                abc_matches[sym] = clean
+    return matches, anchors, abc_matches
+
+# ──────────────────────────────────────────────
+#  BACKGROUND DATA REFRESH THREAD
+# ──────────────────────────────────────────────
+
+def refresh_data():
+    global cached_data, _ltp_last_fetch, _kite_positions_last_fetch, _kite_session, _last_scan_reset
+    while True:
+        with data_lock:
+            pos = load_positions()
+            journal = load_journal()
+            cached_data["positions"] = pos
+            cached_data["journal"] = journal
+            cached_data["stats"] = compute_stats(pos, journal)
+            try:
+                all_t = trade_db.get_all_trades()
+                cached_data["all_trades"] = all_t
+            except Exception:
+                cached_data["all_trades"] = []
+            for pid in PROGRAMS:
+                log_file = PROGRAMS[pid].get("log_file")
+                log_lines = tail_log(log_file) if log_file else []
+                cached_data["log_tail"][pid] = log_lines
+                scan_lines, anchors, abc_matches = parse_scans_for_program(log_lines, pid)
+                cached_data["scans"][pid] = scan_lines
+                cached_data["scan_summary"][pid] = {"anchors": anchors, "abc_matches": abc_matches}
+            now_ist = dt.now()
+            today_str = now_ist.strftime("%Y-%m-%d")
+            market_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
+            if _last_scan_reset != today_str and now_ist >= market_open:
+                _last_scan_reset = today_str
+                empty_scan = {"date": today_str, "timestamp": now_ist.strftime("%Y-%m-%d %H:%M:%S"), "staged_trades": [], "carry_forward": [], "active_live": []}
+                for f in [SCAN_DISPLAY_FILE, SCAN_DISPLAY_INDEX_FILE]:
+                    try:
+                        with open(f, "w") as fh:
+                            json.dump(empty_scan, fh)
+                    except Exception:
+                        pass
+            scan_display = {}
+            try:
+                if os.path.exists(SCAN_DISPLAY_FILE):
+                    with open(SCAN_DISPLAY_FILE, "r") as f:
+                        scan_display["nifty50"] = json.load(f)
+            except Exception:
+                pass
+            try:
+                if os.path.exists(SCAN_DISPLAY_INDEX_FILE):
+                    with open(SCAN_DISPLAY_INDEX_FILE, "r") as f:
+                        scan_display["index"] = json.load(f)
+            except Exception:
+                pass
+            cached_data["scan_display"] = scan_display
+            cached_data["live_execution"] = os.path.exists(LIVE_EXECUTION_FLAG)
+            cached_data["live_execution_index"] = os.path.exists(LIVE_EXECUTION_FLAG_INDEX)
+            now = time.time()
+            if now - _ltp_last_fetch > 30 and cached_data["all_trades"]:
+                _ltp_last_fetch = now
+                try:
+                    active = trade_db.get_active_trades()
+                    if active:
+                        if not _kite_session:
+                            tk = check_token_valid()
+                            if tk["valid"]:
+                                td = json.load(open(TOKEN_FILE))
+                                api_key, _ = get_kite_credentials()
+                                ks = KiteConnect(api_key=api_key)
+                                ks.set_access_token(td["access_token"])
+                                _kite_session = ks
+                        if _kite_session:
+                            syms = []
+                            for t in active:
+                                tok = t.get("option_token") or t.get("index_token")
+                                if tok: syms.append(int(tok))
+                            if syms:
+                                quotes = _kite_session.quote(syms)
+                                ltp = {}
+                                for key, q in quotes.items():
+                                    ltp[key.split(":")[-1]] = q.get("last_price", 0)
+                                cached_data["ltp"] = ltp
+                except Exception:
+                    _kite_session = None
+        if now - _kite_positions_last_fetch > 60:
+            _kite_positions_last_fetch = now
+            try:
+                if not _kite_session:
+                    tk = check_token_valid()
+                    if tk["valid"]:
+                        td = json.load(open(TOKEN_FILE))
+                        api_key, _ = get_kite_credentials()
+                        ks = KiteConnect(api_key=api_key)
+                        ks.set_access_token(td["access_token"])
+                        _kite_session = ks
+                if _kite_session:
+                    kite_positions = _kite_session.positions()
+                    merged = []
+                    for p in kite_positions.get("net", []):
+                        sym = p.get("tradingsymbol", "")
+                        if not sym:
+                            continue
+                        qty = abs(int(p.get("quantity", 0)))
+                        if qty == 0:
+                            continue
+                        merged.append({
+                            "contract": sym,
+                            "quantity": qty,
+                            "entry_price": float(p.get("average_price", 0)),
+                            "pnl": float(p.get("pnl", 0)),
+                            "exchange": p.get("exchange", ""),
+                            "source": "kite"
+                        })
+                    cached_data["kite_positions"] = merged
+            except Exception:
+                pass
+        if int(time.time()) % 3600 < REFRESH_SECONDS:
+            auto_export_if_new_month()
+        time.sleep(REFRESH_SECONDS)
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Trading Control Center</title>
+    <script>
+        // ── Filter State ──
+        let journalFilter = 'all';
+        let scanFilter = 'all';
+        let logFilter = 'all';
+        let positionFilter = 'active';
+
+        // ── Tab Switching ──
+        function switchLeftTab(tabId) {
+            document.querySelectorAll('.left-tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.left-tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            event.target.classList.add('active');
+            if (tabId === 'backtest-tab') renderBacktest();
+            if (tabId === 'scan-tab-left') renderScanTab();
+        }
+
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            event.target.classList.add('active');
+        }
+
+        // ── Filter Controls ──
+        function setFilter(type, value) {
+            if (type === 'journal') journalFilter = value;
+            else if (type === 'scan') scanFilter = value;
+            else if (type === 'log') logFilter = value;
+            else if (type === 'position') { positionFilter = value; document.querySelectorAll('.pos-filter-btn').forEach(b => b.classList.remove('active')); event.target.classList.add('active'); }
+            renderReport();
+        }
+
+        // ── Backtest Controls ──
+        async function toggleBacktestMode(enabled) {
+            try {
+                await fetch('/api/backtest/mode', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: enabled})
+                });
+                refreshBacktestMode();
+            } catch(e) { console.log(e); }
+        }
+
+        // ── Live Execution Toggle ──
+        async function toggleLiveExecution(engine) {
+            const isIndex = engine === 'index';
+            const tgl = document.getElementById(isIndex ? 'live-exec-toggle-idx' : 'live-exec-toggle');
+            const lbl = document.getElementById(isIndex ? 'live-exec-label-idx' : 'live-exec-label');
+            const was = tgl.classList.contains('active');
+            const ep = isIndex ? '/api/live-execution/index' : '/api/live-execution/nifty50';
+            try {
+                const r = await fetch(ep, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: !was})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    tgl.classList.toggle('active', d.enabled);
+                    const label = isIndex ? 'IDX' : 'N50';
+                    lbl.textContent = d.enabled ? label+': ON' : label+': OFF';
+                    lbl.style.color = d.enabled ? '#3fb950' : '#8b949e';
+                }
+            } catch(e) { console.log(e); }
+        }
+
+        async function toggleCardLive(pid) {
+            const ep = '/api/live-execution/' + pid;
+            const sw = document.getElementById('live-toggle-' + pid);
+            const lb = document.getElementById('live-label-' + pid);
+            const was = sw.classList.contains('on');
+            try {
+                const r = await fetch(ep, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({enabled: !was})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    sw.classList.toggle('on', d.enabled);
+                    lb.textContent = d.enabled ? 'LIVE' : 'SCAN';
+                    lb.style.color = d.enabled ? '#3fb950' : '#8b949e';
+                }
+            } catch(e) { console.log(e); }
+        }
+
+        function refreshLiveExec() {
+            const d = window._lastData;
+            if (!d) return;
+            const enabled = d.live_execution || false;
+            const enabledIdx = d.live_execution_index || false;
+            const tgl = document.getElementById('live-exec-toggle');
+            const lbl = document.getElementById('live-exec-label');
+            if (tgl) {
+                tgl.classList.toggle('active', enabled);
+                lbl.textContent = enabled ? 'N50: ON' : 'N50: OFF';
+                lbl.style.color = enabled ? '#3fb950' : '#8b949e';
+            }
+            const tglIdx = document.getElementById('live-exec-toggle-idx');
+            const lblIdx = document.getElementById('live-exec-label-idx');
+            if (tglIdx) {
+                tglIdx.classList.toggle('active', enabledIdx);
+                lblIdx.textContent = enabledIdx ? 'IDX: ON' : 'IDX: OFF';
+                lblIdx.style.color = enabledIdx ? '#3fb950' : '#8b949e';
+            }
+        }
+
+        // ── Program Start/Stop ──
+        async function toggleProgram(progId, action) {
+            if (action === 'stop') {
+                try { await fetch('/api/anchor/stop', {method: 'POST'}); } catch(e) {}
+            }
+            const btn = document.querySelector(`.start-btn[onclick*="'${progId}'"]`);
+            const fb = document.getElementById(`cfg-fb-${progId}`);
+            if (action === 'start' && btn) btn.disabled = true;
+            try {
+                const r = await fetch(`/api/programs/${progId}/${action}`, {method: 'POST'});
+                const d = await r.json();
+                if (d.ok) {
+                    if (fb) { fb.textContent = action === 'start' ? 'Running!' : 'Stopped'; fb.style.color = '#3fb950'; setTimeout(() => { fb.textContent = ''; }, 2000); }
+                    setTimeout(refreshData, 500);
+                }
+                if (d.error) {
+                    if (fb) { fb.textContent = d.error; fb.style.color = '#f85149'; setTimeout(() => { fb.textContent = ''; }, 4000); }
+                    if (action === 'start' && btn) btn.disabled = false;
+                }
+            } catch(e) { console.log(e); if (action === 'start' && btn) btn.disabled = false; }
+        }
+
+        function toggleConfig(headerEl) {
+            const body = headerEl.parentElement.querySelector('.config-body');
+            const arrow = headerEl.querySelector('.config-arrow');
+            if (body.style.display === 'block') {
+                body.style.display = 'none';
+                arrow.textContent = '\u25B6';
+            } else {
+                body.style.display = 'block';
+                arrow.textContent = '\u25BC';
+            }
+        }
+
+        async function saveConfig(progId) {
+            const inputs = document.querySelectorAll(`.config-input[data-prog="${progId}"]`);
+            const data = {};
+            inputs.forEach(inp => {
+                data[inp.getAttribute('data-field')] = inp.value;
+            });
+            try {
+                const r = await fetch(`/api/config/${progId}`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(data)
+                });
+                const d = await r.json();
+                const fb = document.getElementById(`cfg-fb-${progId}`);
+                if (d.ok) {
+                    fb.textContent = 'Saved!';
+                    fb.style.color = '#3fb950';
+                } else {
+                    fb.textContent = 'Failed';
+                    fb.style.color = '#f85149';
+                }
+                setTimeout(() => { fb.textContent = ''; }, 2000);
+            } catch(e) { console.log(e); }
+        }
+
+        async function clearScanData() {
+            await fetch('/api/scan/clear', {method:'POST'});
+            await refreshData();
+            renderScanTab();
+        }
+
+        async function scanExport() {
+            try {
+                const r = await fetch('/api/scan/export', {method:'POST'});
+                if (!r.ok) return;
+                const blob = await r.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'scan_export.csv';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch(e) { console.log(e); }
+        }
+
+        let _sortPref = {};
+
+        function sortTable(th, colIdx) {
+            const table = th.closest('table');
+            const container = table.closest('[id]');
+            const key = container ? container.id : '_default';
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            const dir = th.getAttribute('data-dir') === 'asc' ? 'desc' : 'asc';
+            th.setAttribute('data-dir', dir);
+            _sortPref[key] = { col: colIdx, dir: dir };
+            rows.sort((a, b) => {
+                let aVal = a.cells[colIdx].innerText.trim();
+                let bVal = b.cells[colIdx].innerText.trim();
+                let aNum = parseFloat(aVal.replace('%', '').replace(',', ''));
+                let bNum = parseFloat(bVal.replace('%', '').replace(',', ''));
+                if (!isNaN(aNum) && !isNaN(bNum)) {
+                    return dir === 'asc' ? aNum - bNum : bNum - aNum;
+                }
+                return dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+            });
+            rows.forEach(r => tbody.appendChild(r));
+        }
+
+        function reapplySorts() {
+            for (const [key, pref] of Object.entries(_sortPref)) {
+                const container = document.getElementById(key);
+                if (!container) continue;
+                container.querySelectorAll('table').forEach(table => {
+                    const ths = table.querySelectorAll('th');
+                    if (pref.col >= ths.length) return;
+                    const th = ths[pref.col];
+                    th.setAttribute('data-dir', pref.dir);
+                    const tbody = table.querySelector('tbody');
+                    if (!tbody) return;
+                    const rows = Array.from(tbody.querySelectorAll('tr'));
+                    rows.sort((a, b) => {
+                        let aVal = a.cells[pref.col].innerText.trim();
+                        let bVal = b.cells[pref.col].innerText.trim();
+                        let aNum = parseFloat(aVal.replace('%', '').replace(',', ''));
+                        let bNum = parseFloat(bVal.replace('%', '').replace(',', ''));
+                        if (!isNaN(aNum) && !isNaN(bNum)) {
+                            return pref.dir === 'asc' ? aNum - bNum : bNum - aNum;
+                        }
+                        return pref.dir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                    });
+                    rows.forEach(r => tbody.appendChild(r));
+                });
+            }
+        }
+
+        // ── Global Edit State & Scan Tab Render ──
+        let editStates = {};
+        function renderScanTab() {
+            const d = window._lastData;
+            if (!d) return;
+            const sd = d.scan_display || {};
+            const filter = (document.getElementById('scan-engine-filter') || {}).value || 'all';
+            let scanHtml = '';
+            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">AncherT</th><th onclick="sortTable(this,9)">EntryTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th>';
+            function tradeRow(t, resultBadge) {
+                const entry = t.entry_spot !== undefined && t.entry_spot !== null ? parseFloat(t.entry_spot).toFixed(2) : '-';
+                const sl = t.current_sl !== undefined && t.current_sl !== null ? parseFloat(t.current_sl).toFixed(2) : '-';
+                const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '-';
+                const t2v = t.t2 !== undefined && t.t2 !== null ? t.t2 : '-';
+                const t3v = t.t3 !== undefined && t.t3 !== null ? t.t3 : '-';
+                const et = t.entry_time || '';
+                let etFormatted = '-';
+                if (et) {
+                    const s = et.split('+')[0].replace('T', ' ');
+                    const p = s.split(' ');
+                    const dp = p[0] ? p[0].split('-') : [];
+                    const tp = p[1] ? p[1].split(':') : [];
+                    if (dp.length === 3 && tp.length >= 2)
+                        etFormatted = `${dp[2]}-${dp[1]}-${dp[0].slice(-2)} ${tp[0]}:${tp[1]}`;
+                }
+                const at = t.candle_a_time || '';
+                let atFormatted = '-';
+                if (at) {
+                    const s = at.split('+')[0].replace('T', ' ');
+                    const p = s.split(' ');
+                    const dp = p[0] ? p[0].split('-') : [];
+                    const tp = p[1] ? p[1].split(':') : [];
+                    if (dp.length === 3 && tp.length >= 2)
+                        atFormatted = `${dp[2]}-${dp[1]}-${dp[0].slice(-2)} ${tp[0]}:${tp[1]}`;
+                }
+                let res = t.pattern || t.result || '-';
+                if (res.includes('Engulf')) res = 'BE_ABCD';
+                else if (res.includes('Sweep') || res.includes('LL')) res = 'LL_ABCD';
+                else if (res.includes('Baby') || res.includes('Hammer')) res = 'HAMMER_ABCD';
+                else if (res.includes('Harami')) res = 'HARAMI_ABCD';
+                else if (res.includes('Higher_Highs') || res.includes('Two_Higher')) res = 'HH_ABCD';
+                else if (res.includes('Base')) res = 'BASE_ABCD';
+                else if (res === 'SCAN_READY') res = 'BE_ABCD';
+                const cf = t.carry_forward ? 'Yes' : 'No';
+                const rr = t.rr !== undefined && t.rr !== null ? parseFloat(t.rr).toFixed(2) : '0.00';
+                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td></tr>`;
+            }
+            const engines = filter === 'all' ? ['nifty50', 'index'] : [filter];
+            engines.forEach(eng => {
+                const data = sd[eng];
+                if (!data) return;
+                const staged = data.staged_trades || [];
+                const engLabel = eng === 'nifty50' ? 'Nifty 50' : 'Index';
+                if (staged.length) {
+                    scanHtml += '<div class="scan-section-title">[' + engLabel + '] Scan Results (' + staged.length + ')</div>';
+                    scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
+                    staged.forEach(t => { scanHtml += tradeRow(t, 'badge-open'); });
+                    scanHtml += '</tbody></table></div>';
+                }
+            });
+            if (!scanHtml) {
+                scanHtml = '<p class="empty-state">No scan trades yet. Run a scan cycle or wait for next cycle.</p>';
+            } else {
+                const ts = Object.values(sd).map(v => v.timestamp).filter(Boolean).sort().pop() || '-';
+                scanHtml += '<div style="padding:6px 14px;font-size:11px;color:#8b949e">Last updated: ' + ts + '</div>';
+            }
+            document.getElementById('scan-body').innerHTML = scanHtml;
+            reapplySorts();
+        }
+
+        function showToast(msg, type) {
+            const c = document.getElementById('toast-container');
+            if (!c) return;
+            const t = document.createElement('div');
+            t.className = 'toast toast-' + type;
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2500);
+        }
+        function editRow(uid, symbol, sl, t1, t2, t3) {
+            const clean = v => (v === '---' || v === '' || v === undefined || v === null) ? '' : v;
+            editStates[uid] = {active: true, sl: clean(sl), t1: clean(t1), t2: clean(t2), t3: clean(t3)};
+            renderScanTab(); renderReport();
+        }
+        function cancelEdit(uid) {
+            delete editStates[uid];
+            renderScanTab(); renderReport();
+        }
+        async function saveEdit(uid, symbol, engine) {
+            const es = editStates[uid];
+            if (!es) return;
+            const newSl = document.getElementById('sl_'+uid)?.value;
+            const newT1 = document.getElementById('t1_'+uid)?.value;
+            const newT2 = document.getElementById('t2_'+uid)?.value;
+            const newT3 = document.getElementById('t3_'+uid)?.value;
+            if (!newSl || !newT1) return;
+            delete editStates[uid];
+            try {
+                const r = await fetch('/api/update-position', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({engine: engine, symbol: symbol, current_sl: parseFloat(newSl), t1: parseFloat(newT1), t2: newT2 ? parseFloat(newT2) : null, t3: newT3 ? parseFloat(newT3) : null})
+                });
+                const j = await r.json();
+                if (j.ok) {
+                    showToast(`SL/T1 updated for ${symbol}`, 'success');
+                } else {
+                    showToast(`Failed: ${j.error || 'unknown'}`, 'error');
+                }
+            } catch(e) {
+                showToast(`Network error: ${e.message}`, 'error');
+            }
+            refreshData();
+        }
+
+        // ── Main Dashboard Render ──
+        function renderReport() {
             const d = window._lastData;
             if (!d) return;
             const stats = d.stats || {};
@@ -43,24 +858,40 @@ function renderReport() {
                     status: 'ACTIVE',
                     source: 'kite'
                 });
+                const dbMatch = allTrades.find(t => {
+                    const tc = (t.contract || '').replace(/\\s+/g, '').toUpperCase();
+                    const ts = (t.symbol || '').replace(/\\s+/g, '').toUpperCase();
+                    const kc = (kp.contract || '').replace(/\\s+/g, '').toUpperCase();
+                    return (tc && (tc === kc || kc.includes(tc) || tc.includes(kc))) || (ts && (ts === kc || kc.includes(ts)));
+                });
+                if (dbMatch) {
+                    const last = mergedPositions[mergedPositions.length - 1];
+                    last.current_sl = dbMatch.current_sl;
+                    last.t1 = dbMatch.t1;
+                    last.t2 = dbMatch.t2;
+                    last.t3 = dbMatch.t3;
+                    if (dbMatch.pattern) last.pattern = dbMatch.pattern;
+                }
             });
             allTrades.forEach(t => {
                 const contract = t.contract || t.symbol || '';
-                if (seenContracts.has(contract)) return;
-                const st = (t.status || '').toLowerCase();
+                const inKite = kitePos.some(kp => kp.contract === contract || kp.contract.includes(contract) || contract.includes(kp.contract));
+                if (inKite) return;
+                let st = (t.status || '').toLowerCase();
+                if (st === 'active' && !inKite) st = 'exited';
                 if (positionFilter === 'active' && st !== 'active') return;
-                if (positionFilter === 'completed' && st !== 'sl_hit' && st !== 'target_hit') return;
+                if (positionFilter === 'completed' && st !== 'sl_hit' && st !== 'target_hit' && st !== 'exited') return;
                 if (positionFilter === 'sl_hit' && st !== 'sl_hit') return;
                 mergedPositions.push({
                     symbol: t.symbol || contract,
                     engine: (t.engine === 'index' || (t.symbol||'').includes('NIFTY') || (t.symbol||'').includes('BANK')) ? 'Index' : 'Nifty 50',
                     pattern: t.pattern || '',
-                    entry_spot: t.entry_spot || '',
-                    current_sl: t.current_sl || '',
-                    t1: t.t1 || '',
-                    t2: t.t2 || '',
-                    t3: t.t3 || '',
-                    status: t.status || 'ACTIVE',
+                    entry_spot: t.entry_spot !== undefined && t.entry_spot !== null ? t.entry_spot : '',
+                    current_sl: t.current_sl !== undefined && t.current_sl !== null ? t.current_sl : '',
+                    t1: t.t1 !== undefined && t.t1 !== null ? t.t1 : '',
+                    t2: t.t2 !== undefined && t.t2 !== null ? t.t2 : '',
+                    t3: t.t3 !== undefined && t.t3 !== null ? t.t3 : '',
+                    status: st === 'exited' ? 'EXITED' : (t.status || 'ACTIVE'),
                     created_at: t.created_at || '',
                     exit_time: t.exit_time || '',
                     pnl_percent: t.pnl_percent,
@@ -76,33 +907,39 @@ function renderReport() {
                     let stLabel = t.status || 'ACTIVE';
                     if (st === 'sl_hit') { badge = 'badge-loss'; stLabel = 'SL HIT'; }
                     else if (st === 'target_hit') { badge = 'badge-profit'; stLabel = 'TARGET'; }
+                    else if (st === 'exited') { badge = 'badge-closed'; stLabel = 'EXITED'; }
                     const pnl = t.pnl_percent !== undefined && t.pnl_percent !== null ? t.pnl_percent : (t.pnl || '');
                     const pnlBadge = pnl !== '' ? (pnl >= 0 ? 'badge-profit' : 'badge-loss') : '';
                     const ltpVal = t.token ? (ltpData[t.token] || '') : '';
                     const qty = t.quantity || '';
-                    const slVal = t.current_sl || '';
-                    const t1v = t.t1 || '';
-                    const t2v = t.t2 || '';
-                    const t3v = t.t3 || '';
-                    const entryVal = t.entry_spot || '';
-                    const uid = 'pos_' + (t.symbol || 'no_sym') + '_' + (Math.random()*1e8|0);
+                    const slVal = t.current_sl !== undefined && t.current_sl !== null ? t.current_sl : '';
+                    const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '';
+                    const t2v = t.t2 !== undefined && t.t2 !== null ? t.t2 : '';
+                    const t3v = t.t3 !== undefined && t.t3 !== null ? t.t3 : '';
+                    const entryVal = t.entry_spot !== undefined && t.entry_spot !== null ? t.entry_spot : '';
+                    const uid = 'pos_' + (t.symbol || 'no_sym') + '_' + (t.source || '');
                     const es = editStates[uid];
                     let slCell, t1Cell, actCell;
                     if (es && es.active) {
-                        slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px"></td>`;
-                        t1Cell = `<td><input id="t1_${uid}" value="${es.t1}" style="width:60px"></td>`;
-                        actCell = `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${t.engine === 'Index' ? 'index' : 'nifty50'}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
+                        const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
+                        slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px" oninput="editStates['${uid}'].sl=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        t1Cell = `<td><input id="t1_${uid}" value="${es.t1}" style="width:60px" oninput="editStates['${uid}'].t1=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        t2Cell = `<td><input id="t2_${uid}" value="${es.t2}" style="width:60px" oninput="editStates['${uid}'].t2=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        t3Cell = `<td><input id="t3_${uid}" value="${es.t3}" style="width:60px" oninput="editStates['${uid}'].t3=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        actCell = `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${eng2}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
                     } else {
                         slCell = `<td>${slVal}</td>`;
                         t1Cell = `<td>${t1v}</td>`;
+                        t2Cell = `<td>${t2v}</td>`;
+                        t3Cell = `<td>${t3v}</td>`;
                         const canEdit = st === 'active';
                         if (canEdit) {
-                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}')">Edit</button></td>`;
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button></td>`;
                         } else {
                             actCell = `<td></td>`;
                         }
                     }
-                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}<td>${t2v}</td><td>${t3v}</td><td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td>${actCell}</tr>`;
+                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td>${actCell}</tr>`;
                 });
                 posHtml += '</tbody></table>';
             } else {
@@ -111,7 +948,29 @@ function renderReport() {
             document.getElementById('active-positions-body').innerHTML = posHtml;
 
             let jHtml = '';
-            let filteredJournal = journal || [];
+            let filteredJournal = [...(journal || [])];
+            const todayStr = new Date().toISOString().split('T')[0];
+            allTrades.forEach(t => {
+                const st = (t.status || '').toLowerCase();
+                if (st === 'sl_hit' || st === 'target_hit' || st === 'exited') return;
+                const et = (t.created_at || t.entry_time || '');
+                const entryDate = et.split(' ')[0].split('T')[0];
+                if (entryDate && entryDate < todayStr) {
+                    filteredJournal.push({
+                        Timestamp: et,
+                        Symbol: t.contract || t.symbol,
+                        Pattern: t.pattern || 'CARRY_FORWARD',
+                        Action: 'CARRY_FORWARD',
+                        Status: 'ACTIVE',
+                        Entry: t.entry_spot,
+                        SL: t.current_sl,
+                        Target: t.t1,
+                        RR: t.rr || '-',
+                        'P&L %': t.pnl_percent || '-'
+                    });
+                }
+            });
+
             if (journalFilter !== 'all') {
                 filteredJournal = filteredJournal.filter(j => {
                     const sym = (j.Symbol || '').toUpperCase();
@@ -123,7 +982,15 @@ function renderReport() {
                 jHtml = '<table><thead><tr><th onclick="sortTable(this,0)">Time</th><th onclick="sortTable(this,1)">Symbol</th><th onclick="sortTable(this,2)">Pattern</th><th onclick="sortTable(this,3)">Action</th><th onclick="sortTable(this,4)">Status</th><th onclick="sortTable(this,5)">Entry</th><th onclick="sortTable(this,6)">SL</th><th onclick="sortTable(this,7)">Target</th><th onclick="sortTable(this,8)">RR</th><th onclick="sortTable(this,9)">P&L %</th></tr></thead><tbody>';
                 filteredJournal.forEach(j => {
                     const pnlv = j['P&L %'] || '-';
-                    const time = j.Timestamp ? j.Timestamp.split(' ')[1] || '' : '';
+                    const ts = j.Timestamp || '';
+                    let time = '';
+                    if (ts) {
+                        const p = ts.split(' ');
+                        const dp = p[0] ? p[0].split('-') : [];
+                        const tp = p[1] ? p[1].split(':') : [];
+                        if (dp.length === 3 && tp.length === 3)
+                            time = `${dp[2]}:${dp[1]}:${dp[0].slice(-2)}-${tp[0]}:${tp[1]}`;
+                    }
                     const act = j.Action || '';
                     const st = j.Status || '';
                     let badge = 'badge-open';
@@ -146,123 +1013,6 @@ function renderReport() {
                 jHtml = '<p class="empty-state">No journal entries yet</p>';
             }
             document.getElementById('journal-body').innerHTML = jHtml;
-
-            let editStates = {};
-            function renderScanTab() {
-                const d = window._lastData;
-                if (!d) return;
-                const sd = d.scan_display || {};
-                const filter = (document.getElementById('scan-engine-filter') || {}).value || 'all';
-                let scanHtml = '';
-                const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">EntryTime</th><th onclick="sortTable(this,9)">ExitTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th><th>Act</th>';
-                function tradeRow(t, resultBadge, showEdit) {
-                    const entry = t.entry_spot !== undefined && t.entry_spot !== null ? parseFloat(t.entry_spot).toFixed(2) : '-';
-                    const sl = t.current_sl !== undefined && t.current_sl !== null ? parseFloat(t.current_sl).toFixed(2) : '-';
-                    const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '-';
-                    const t2v = t.t2 !== undefined && t.t2 !== null ? t.t2 : '-';
-                    const t3v = t.t3 !== undefined && t.t3 !== null ? t.t3 : '-';
-                    const et = t.entry_time || '-';
-                    const ext = t.exit_time || '-';
-                    const res = t.result || '-';
-                    const cf = t.carry_forward ? 'Yes' : 'No';
-                    const rr = t.rr !== undefined && t.rr !== null ? parseFloat(t.rr).toFixed(2) : '0.00';
-                    const uid = (t.symbol || '') + '_' + (Math.random()*1e8|0);
-                    const es = editStates[uid];
-                    let editCols = '';
-                    if (es && es.active) {
-                        editCols = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px"></td><td><input id="t1_${uid}" value="${es.t1}" style="width:60px"></td>`;
-                        editCols += `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${showEdit || ''}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
-                    } else {
-                        editCols = `<td>${sl}</td><td>${t1v}</td>`;
-                        if (showEdit) {
-                            editCols += `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${sl}','${t1v}')">Edit</button></td>`;
-                        } else {
-                            editCols += `<td></td>`;
-                        }
-                    }
-                    return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td>${editCols}<td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${et}</td><td style="font-size:11px">${ext}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td></tr>`;
-                }
-                const engines = filter === 'all' ? ['nifty50', 'index'] : [filter];
-                engines.forEach(eng => {
-                    const data = sd[eng];
-                    if (!data) return;
-                    const staged = data.staged_trades || [];
-                    const carryFwd = data.carry_forward || [];
-                    const activeLive = data.active_live || [];
-                    const engLabel = eng === 'nifty50' ? 'Nifty 50' : 'Index';
-                    if (staged.length) {
-                        scanHtml += '<div class="scan-section-title">[' + engLabel + '] Scan Results (' + staged.length + ')</div>';
-                        scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
-                        staged.forEach(t => { scanHtml += tradeRow(t, 'badge-open', ''); });
-                        scanHtml += '</tbody></table></div>';
-                    }
-                    if (carryFwd.length) {
-                        scanHtml += '<div class="scan-section-title">[' + engLabel + '] Carry Forward (' + carryFwd.length + ')</div>';
-                        scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
-                        carryFwd.forEach(t => { scanHtml += tradeRow(t, 'badge-open', eng); });
-                        scanHtml += '</tbody></table></div>';
-                    }
-                    if (activeLive.length) {
-                        scanHtml += '<div class="scan-section-title">[' + engLabel + '] Active (Live) (' + activeLive.length + ')</div>';
-                        scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
-                        activeLive.forEach(t => {
-                            const res = t.result || 'ACTIVE';
-                            const rBadge = res === 'ACTIVE' ? 'badge-open' : (res === 'SL_HIT' ? 'badge-loss' : 'badge-profit');
-                            scanHtml += tradeRow(t, rBadge, eng);
-                        });
-                        scanHtml += '</tbody></table></div>';
-                    }
-                });
-                if (!scanHtml) {
-                    scanHtml = '<p class="empty-state">No scan trades yet. Run a scan cycle or wait for next cycle.</p>';
-                } else {
-                    const ts = Object.values(sd).map(v => v.timestamp).filter(Boolean).sort().pop() || '-';
-                    scanHtml += '<div style="padding:6px 14px;font-size:11px;color:#8b949e">Last updated: ' + ts + '</div>';
-                }
-                document.getElementById('scan-body').innerHTML = scanHtml;
-            }
-
-            function showToast(msg, type) {
-                const c = document.getElementById('toast-container');
-                if (!c) return;
-                const t = document.createElement('div');
-                t.className = 'toast toast-' + type;
-                t.textContent = msg;
-                c.appendChild(t);
-                setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2500);
-            }
-            function editRow(uid, symbol, sl, t1) {
-                editStates[uid] = {active: true, sl: sl, t1: t1};
-                renderScanTab(); renderReport();
-            }
-            function cancelEdit(uid) {
-                delete editStates[uid];
-                renderScanTab(); renderReport();
-            }
-            async function saveEdit(uid, symbol, engine) {
-                const es = editStates[uid];
-                if (!es) return;
-                const newSl = document.getElementById('sl_'+uid)?.value;
-                const newT1 = document.getElementById('t1_'+uid)?.value;
-                if (!newSl || !newT1) return;
-                delete editStates[uid];
-                try {
-                    const r = await fetch('/api/update-position', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({engine: engine, symbol: symbol, current_sl: parseFloat(newSl), t1: parseFloat(newT1)})
-                    });
-                    const j = await r.json();
-                    if (j.ok) {
-                        showToast(`SL/T1 updated for ${symbol}`, 'success');
-                    } else {
-                        showToast(`Failed: ${j.error || 'unknown'}`, 'error');
-                    }
-                } catch(e) {
-                    showToast(`Network error: ${e.message}`, 'error');
-                }
-                renderScanTab(); renderReport();
-            }
             renderScanTab();
 
             let logHtml = '';
@@ -280,6 +1030,7 @@ function renderReport() {
 
             refreshLiveExec();
             document.getElementById('last-updated').textContent = 'Last refreshed: ' + new Date().toLocaleString();
+            reapplySorts();
         }
 
         function renderBacktest() {
@@ -320,6 +1071,7 @@ function renderReport() {
             });
             html += '</tbody></table>';
             document.getElementById('backtest-body').innerHTML = html;
+            reapplySorts();
         }
 
         async function refreshData() {
@@ -541,6 +1293,14 @@ function renderReport() {
             } catch(e) { console.log(e); }
         }
 
+        async function clearJournal() {
+            try {
+                const r = await fetch('/api/journal/clear', {method: 'POST'});
+                const d = await r.json();
+                if (d.ok) setTimeout(refreshData, 300);
+            } catch(e) { console.log(e); }
+        }
+
         setInterval(refreshData, {{ refresh * 1000 }});
         window.addEventListener('load', () => { refreshData(); });
     </script>
@@ -633,8 +1393,6 @@ function renderReport() {
         .config-label { font-size: 10px; color: #8b949e; }
         .config-input { background: #161b22; color: #c9d1d9; border: 1px solid #30363d; border-radius: 3px; padding: 2px 6px; font-size: 10px; width: 120px; }
         .config-input:focus { outline: none; border-color: #58a6ff; }
-        .config-save-btn { margin-top: 6px; padding: 3px 12px; background: #238636; color: #fff; border: none; border-radius: 4px; font-size: 10px; cursor: pointer; }
-        .config-save-btn:hover { background: #2ea043; }
         .config-feedback { font-size: 10px; margin-left: 8px; }
 
         .section-panel { background: #161b22; border: 1px solid #30363d; border-radius: 8px; margin-bottom: 14px; overflow: hidden; }
@@ -816,17 +1574,16 @@ function renderReport() {
                     <div class="config-row">
                         <span class="config-label">{{ field.label }}</span>
                         {% if field.type == "select" %}
-                        <select class="config-input" data-prog="{{ pid }}" data-field="{{ field_key }}">
+                        <select class="config-input" data-prog="{{ pid }}" data-field="{{ field_key }}" onchange="event.stopPropagation();saveConfig('{{ pid }}')">
                             {% for opt in field.options %}
                             <option value="{{ opt }}">{{ opt }}</option>
                             {% endfor %}
                         </select>
                         {% else %}
-                        <input type="number" class="config-input" data-prog="{{ pid }}" data-field="{{ field_key }}" value="{{ field.default }}" step="any">
+                        <input type="number" class="config-input" data-prog="{{ pid }}" data-field="{{ field_key }}" value="{{ field.default }}" step="any" onchange="event.stopPropagation();saveConfig('{{ pid }}')">
                         {% endif %}
                     </div>
                     {% endfor %}
-                    <button class="config-save-btn" onclick="event.stopPropagation();saveConfig('{{ pid }}')">Save Config</button>
                     <span class="config-feedback" id="cfg-fb-{{ pid }}"></span>
                 </div>
             </div>
@@ -841,7 +1598,7 @@ function renderReport() {
         <div class="reports-left">
             <div class="left-tab-bar">
                 <button class="left-tab-btn active" onclick="switchLeftTab('active-pos-tab')">Live Positions</button>
-                <button class="left-tab-btn" onclick="switchLeftTab('scan-tab-left')">Scan Matches</button>
+                <button class="left-tab-btn" onclick="switchLeftTab('scan-tab-left')">Today's scan</button>
                 <button class="left-tab-btn" onclick="switchLeftTab('backtest-tab')">Backtest Summary</button>
                 <div style="display:flex;align-items:center;gap:6px;margin-left:auto;padding:0 10px;">
                     <label class="toggle-label" title="Toggle backtest mode">
@@ -884,6 +1641,8 @@ function renderReport() {
                                 <option value="nifty50">Nifty 50</option>
                                 <option value="index">Index</option>
                             </select>
+                            <button class="btn-scan-clear" onclick="clearScanData()" style="padding:2px 10px;background:inherit;border:1px solid #f85149;color:#f85149;border-radius:4px;font-size:10px;cursor:pointer">Clear</button>
+                            <button class="btn-scan-export" onclick="scanExport()" style="padding:2px 10px;background:inherit;border:1px solid #58a6ff;color:#58a6ff;border-radius:4px;font-size:10px;cursor:pointer">Export</button>
                         </div>
                     </div>
                     <div id="scan-body"><p class="empty-state">No scan trades yet</p></div>
@@ -925,11 +1684,14 @@ function renderReport() {
             <div id="journal-tab" class="tab-content">
                 <div class="section-panel">
                     <div class="section-header"><span>Trade Journal</span>
-                        <select onchange="setFilter('journal',this.value)" class="filter-select">
-                            <option value="all">All</option>
-                            <option value="index">Index</option>
-                            <option value="nifty50">Nifty 50</option>
-                        </select>
+                        <div style="display:flex;align-items:center;gap:6px">
+                            <select onchange="setFilter('journal',this.value)" class="filter-select">
+                                <option value="all">All</option>
+                                <option value="index">Index</option>
+                                <option value="nifty50">Nifty 50</option>
+                            </select>
+                            <button class="clear-logs-btn" onclick="clearJournal()">Clear</button>
+                        </div>
                     </div>
                     <div id="journal-body"><p class="empty-state">No journal entries yet</p></div>
                 </div>
@@ -1009,6 +1771,67 @@ def api_save_config(prog_id):
     if not data:
         return jsonify({"ok": False, "error": "Invalid JSON"})
     save_config(prog_id, data)
+    return jsonify({"ok": True})
+
+@app.route("/api/scan/clear", methods=["POST"])
+def api_scan_clear():
+    empty_scan = {"date": dt.now().strftime("%Y-%m-%d"),
+                  "timestamp": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "staged_trades": [], "carry_forward": [], "active_live": []}
+    for f in [SCAN_DISPLAY_FILE, SCAN_DISPLAY_INDEX_FILE]:
+        try:
+            with open(f, "w") as fh:
+                json.dump(empty_scan, fh)
+        except Exception:
+            pass
+    return jsonify({"ok": True})
+
+@app.route("/api/scan/export", methods=["POST"])
+def api_scan_export():
+    try:
+        import io
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Engine", "Symbol", "Contract", "Side", "Entry", "SL", "T1", "T2", "T3",
+                         "Pattern", "EntryTime", "CandleATime", "CarryForward", "RR", "Status"])
+        files = [("Nifty 50", SCAN_DISPLAY_FILE), ("Index", SCAN_DISPLAY_INDEX_FILE)]
+        for label, path in files:
+            full = os.path.join(BASE_DIR, path)
+            if not os.path.exists(full):
+                continue
+            with open(full) as f:
+                data = json.load(f)
+            for t in data.get("staged_trades", []):
+                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
+                                 t.get("entry_spot",""), t.get("current_sl",""),
+                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
+                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
+                                 t.get("carry_forward",""), t.get("rr",""), "Staged"])
+            for t in data.get("active_live", []):
+                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
+                                 t.get("entry_spot",""), t.get("current_sl",""),
+                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
+                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
+                                 t.get("carry_forward",""), t.get("rr",""), "Active"])
+            for t in data.get("carry_forward", []):
+                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
+                                 t.get("entry_spot",""), t.get("current_sl",""),
+                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
+                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
+                                 t.get("carry_forward",""), t.get("rr",""), "CarryFwd"])
+        csv_bytes = output.getvalue().encode("utf-8-sig")
+        return Response(csv_bytes, mimetype="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=scan_export_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
+
+@app.route("/api/journal/clear", methods=["POST"])
+def api_journal_clear():
+    try:
+        if os.path.exists(JOURNAL_FILE):
+            open(JOURNAL_FILE, "w").close()
+    except Exception:
+        pass
     return jsonify({"ok": True})
 
 @app.route("/api/programs/<prog_id>/start", methods=["POST"])
@@ -1147,8 +1970,15 @@ def api_update_position():
     symbol = data.get("symbol", "")
     current_sl = data.get("current_sl")
     t1 = data.get("t1")
-    if not symbol or current_sl is None or t1 is None:
-        return jsonify({"ok": False, "error": "symbol, current_sl, t1 required"}), 400
+    t2 = data.get("t2")
+    t3 = data.get("t3")
+    if not symbol or (current_sl is None and t1 is None and t2 is None and t3 is None):
+        return jsonify({"ok": False, "error": "symbol and at least one level required"}), 400
+    vals = {}
+    if current_sl is not None and str(current_sl).strip() != "": vals["current_sl"] = float(current_sl)
+    if t1 is not None and str(t1).strip() != "": vals["t1"] = float(t1)
+    if t2 is not None and str(t2).strip() != "": vals["t2"] = float(t2)
+    if t3 is not None and str(t3).strip() != "": vals["t3"] = float(t3)
     overrides = {}
     try:
         if os.path.exists(SL_TARGET_OVERRIDES_FILE):
@@ -1156,11 +1986,47 @@ def api_update_position():
                 overrides = json.load(f)
     except Exception:
         overrides = {}
-    overrides.setdefault(engine, {})[symbol] = {"current_sl": float(current_sl), "t1": float(t1)}
+    overrides.setdefault(engine, {})[symbol] = vals
     os.makedirs(os.path.dirname(SL_TARGET_OVERRIDES_FILE), exist_ok=True)
     with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
         json.dump(overrides, f, indent=2)
-    logging.info(f"Position override queued: {engine}/{symbol} SL={current_sl} T1={t1}")
+    matched = False
+    with data_lock:
+        update_keys = list(vals.keys())
+        for t in cached_data.get("all_trades", []):
+            t_sym = t.get("symbol") or t.get("contract") or ""
+            if t_sym == symbol or t.get("contract") == symbol:
+                matched = True
+                for k in update_keys: t[k] = vals[k]
+                tid = t.get("id")
+                if tid:
+                    trade_db.update_trade(tid, vals)
+        for pos_list in [cached_data.get("positions", {})]:
+            for pos_key, pos in (pos_list.items() if isinstance(pos_list, dict) else enumerate(pos_list)):
+                if isinstance(pos, dict) and ((pos.get("symbol") or pos.get("contract") or "") == symbol or pos.get("contract") == symbol):
+                    matched = True
+                    for k in update_keys: pos[k] = vals[k]
+                    tid = pos.get("id")
+                    if tid:
+                        trade_db.update_trade(tid, vals)
+        if not matched:
+            contract = symbol
+            exchange = "NSE"
+            for kp in cached_data.get("kite_positions", []):
+                if kp.get("contract") == symbol or kp.get("symbol") == symbol:
+                    contract = kp.get("contract", symbol)
+                    exchange = kp.get("exchange", "NSE")
+                    break
+            is_stock = exchange == "NSE"
+            trade_data = {"contract": contract, "entry_spot": 0, "position_type": "stock" if is_stock else "option"}
+            trade_data.update(vals)
+            tid = trade_db.create_trade(engine, symbol, trade_data)
+            entry = {"symbol": symbol, "contract": contract, "id": tid, "engine": engine, "status": "ACTIVE", "position_type": "stock" if is_stock else "option"}
+            entry.update(vals)
+            cached_data["all_trades"].append(entry)
+            cached_data["positions"][symbol] = entry
+            logging.info(f"[OVERRIDE] Created new DB trade for {engine}/{symbol}")
+    logging.info(f"Position override queued: {engine}/{symbol} {vals}")
     return jsonify({"ok": True})
 
 EXPORT_STATE_FILE = "output/monitor/export_state.json"

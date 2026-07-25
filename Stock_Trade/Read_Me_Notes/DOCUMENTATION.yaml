@@ -3,21 +3,19 @@
 # Last updated: 2026-07-23
 
 meta:
-  name: Price Action Strategy
+  name: Stock Trade Strategy (Stock_Trade)
   version: Prod Code v01
   platform: Zerodha Kite Connect
-  strategy: Unified ABC Bullish Reversal Pattern
-  deploy_type: Multi-engine automated intraday trading & scanning system
-  coverage: [NIFTY options, BANKNIFTY options, Nifty 50 constituent stock options]
+  strategy: Unified ABC Bullish Reversal Pattern (Stock & Daily Scan)
+  deploy_type: Automated daily stock scanning & stock trade system
+  coverage: [Nifty 50 constituent stocks]
 
 architecture:
-  diagram: "Browser(localhost:5050) -> app.py(Flask) -> {bull_index_trade_engine.py (Index Options), bull_nifty50_scanner_executor.py (Stock Options), bull_nifty50_daily_scanner_export.py (Daily Scan)} -> input/ & output/ files"
+  diagram: "Browser(localhost:5051) -> app.py(Flask) -> {bull_nifty50_daily_scanner_export.py (Daily Scan)} -> input/ & output/ files"
   directory:
     root_files:
-      app.py: "Flask dashboard (Trading Control Center) on port 5050"
-      trading_core.py: "Shared strategy core: pattern scanners, STOCK_REGISTRY, SUPER_STOCKS, INDEX_REGISTRY, find_profit_targets, session loading, market hours, journal writer"
-      bull_index_trade_engine.py: "Index engine — NIFTY & BANKNIFTY options"
-      bull_nifty50_scanner_executor.py: "Nifty 50 stock scanner + executor"
+      app.py: "Flask dashboard (Stock Trade Control Center) on port 5051"
+      trading_core.py: "Shared strategy core: pattern scanners, STOCK_REGISTRY, SUPER_STOCKS, find_profit_targets, session loading, market hours, journal writer"
       bull_nifty50_daily_scanner_export.py: "Nifty 50 daily scanner (Excel export)"
       trade_db.py: "JSON-based trade persistence & cycle staging (thread-safe)"
       Kite_Access_Token_gen.py: "Zerodha Kite OAuth token generator CLI"
