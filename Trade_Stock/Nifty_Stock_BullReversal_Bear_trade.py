@@ -20,7 +20,7 @@ TOKEN_FILE = "input/kite_access_token.txt"
 TIMEFRAME_ENTRY = "day"
 TIMEFRAME_ANCHOR = "day"
 
-OUTPUT_FILE = f"output/exports/Nifty50_Daily_Scan_{dt.now().strftime('%Y%m%d_%H%M')}.csv"
+OUTPUT_FILE = f"output/exports/Nifty50_Daily_Scan_BEAR_{dt.now().strftime('%Y%m%d_%H%M')}.csv"
 
 ACTIVE_POSITIONS = {}
 position_lock = threading.Lock()
@@ -34,7 +34,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("output/logs/bull_daily_scanner.log", mode="a", encoding="utf-8"),
+        logging.FileHandler("output/logs/bull_bear_daily_scanner.log", mode="a", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
@@ -42,12 +42,13 @@ logging.basicConfig(
 from trading_core import (
     load_kite_session,
     log_to_journal,
-    scan_anchor_bcd_breakout,
+    scan_anchor_bcd_breakout_bearish,
     scan_anchor_bcd_breakout_generic,
-    find_anchor_bullish_engulfing,
-    find_anchor_ll_sweep,
-    find_anchor_hammer_baby,
-    find_anchor_bullish_harami,
+    find_anchor_bearish_engulfing,
+    find_anchor_hh_sweep,
+    find_anchor_two_lower_lows,
+    find_anchor_shooting_star_baby,
+    find_anchor_bearish_harami,
     get_adaptive_lookback,
     resample_timeframe,
     sync_stock_tokens,
@@ -55,32 +56,17 @@ from trading_core import (
     SUPER_STOCKS
 )
 
-LOOKBACK_DAYS = 120
-TOKEN_FILE = "input/kite_access_token.txt"
-TIMEFRAME_ENTRY = "day"
-TIMEFRAME_ANCHOR = "day"
-
-OUTPUT_FILE = f"output/exports/Nifty50_Daily_Scan_{dt.now().strftime('%Y%m%d_%H%M')}.csv"
-
-ACTIVE_POSITIONS = {}
-position_lock = threading.Lock()
-ANCHOR_SCAN_REQUEST_FILE = os.path.join("output", "monitor", "anchor_scan_request.txt")
-ANCHOR_SCAN_STOP_FILE = os.path.join("output", "monitor", "anchor_scan_stop.txt")
-
-journal_lock = threading.Lock()
-JOURNAL_FILE = "output/monitor/trade_journal.csv"
-
 def run_scan(kite):
     effective_lookback = get_adaptive_lookback(TIMEFRAME_ENTRY, "STOCK_SPOT", LOOKBACK_DAYS)
     from_date = (dt.now() - timedelta(days=min(effective_lookback, 2000))).strftime("%Y-%m-%d")
     to_date = dt.now().strftime("%Y-%m-%d")
     scanners = [
-        ("S1_Anchor_BCD", lambda df_e, df_a: scan_anchor_bcd_breakout_generic(df_e, df_a, side="BULL")),
+        ("S1_Bear_Anchor_BCD", lambda df_e, df_a: scan_anchor_bcd_breakout_generic(df_e, df_a, side="BEAR")),
     ]
     results = []
     results_lock = threading.Lock()
     scan_order = sorted(STOCK_REGISTRY.keys())
-    logging.info(f"Scanning {len(scan_order)} stocks (TF: {TIMEFRAME_ENTRY}, Lookback: {effective_lookback}d)...")
+    logging.info(f"[BEAR] Scanning {len(scan_order)} stocks for Bear Reversal setups (TF: {TIMEFRAME_ENTRY}, Lookback: {effective_lookback}d)...")
     fetch_tf = "60minute" if TIMEFRAME_ENTRY in ["4h", "4hour", "240min", "240minute"] else TIMEFRAME_ENTRY
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {}
@@ -120,9 +106,9 @@ def run_scan(kite):
                     result["Pattern_Name"] = name
                     with results_lock:
                         results.append(result)
-                    logging.info(f"  -> MATCH: {symbol} | {result['Pattern']} | Entry: {result['Close']:.2f} | SL: {result['SL']:.2f} | T1: {result['T1']:.2f} | RR: {result['RR']:.2f}")
+                    logging.info(f"  -> BEAR MATCH: {symbol} | {result['Pattern']} | Entry: {result['Close']:.2f} | SL: {result['SL']:.2f} | T1: {result['T1']:.2f} | RR: {result['RR']:.2f}")
                     log_to_journal(symbol, result["Pattern"], TIMEFRAME_ENTRY,
-                                   "SCAN_MATCH", "MATCHED",
+                                   "SCAN_MATCH_BEAR", "MATCHED",
                                    f"Entry={result['Close']:.2f} SL={result['SL']:.2f} RR={result['RR']:.2f}",
                                    entry=result['Close'], sl=result['SL'],
                                    target=result.get('T3',''), rr=result['RR'])
@@ -158,26 +144,20 @@ def export_results(results):
     df.to_csv(OUTPUT_FILE, index=False)
     return OUTPUT_FILE
 
-# ──────────────────────────────────────────────
-#  ANCHOR (A-FORMATION) DETECTION — 4 PATTERNS
-# ──────────────────────────────────────────────
-
 def run_anchor_scan(kite):
-    logging.info("Anchor scan requested (daily) - executing analysis...")
-    
-    limits = {"minute": 55, "3minute": 90, "5minute": 160}
-    max_days = limits.get(TIMEFRAME_ANCHOR, 180)
-    from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
+    logging.info("Anchor scan requested (daily bear) - executing analysis...")
+    from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, 180))).strftime("%Y-%m-%d")
     to_date = dt.now().strftime("%Y-%m-%d")
     
     scanners = [
-        ("S1", find_anchor_bullish_engulfing),
-        ("S2", find_anchor_ll_sweep),
-        ("S3", find_anchor_hammer_baby),
-        ("S4", find_anchor_bullish_harami),
+        ("S1_Bear_Engulf", find_anchor_bearish_engulfing),
+        ("S2_Bear_HH_Sweep", find_anchor_hh_sweep),
+        ("S3_Bear_Two_Lower_Lows", find_anchor_two_lower_lows),
+        ("S4_Bear_ShootingStar", find_anchor_shooting_star_baby),
+        ("S5_Bear_Harami", find_anchor_bearish_harami),
     ]
     
-    scan_order = STOCK_REGISTRY.keys()
+    scan_order = sorted(STOCK_REGISTRY.keys())
     
     for symbol in scan_order:
         if os.path.exists(ANCHOR_SCAN_STOP_FILE):
@@ -186,10 +166,6 @@ def run_anchor_scan(kite):
             return
             
         config = STOCK_REGISTRY[symbol]
-        with position_lock:
-            if symbol in ACTIVE_POSITIONS:
-                continue
-                
         try:
             df = pd.DataFrame(kite.historical_data(config["token"], from_date, to_date, TIMEFRAME_ANCHOR))
         except Exception as e:
@@ -202,22 +178,22 @@ def run_anchor_scan(kite):
         for name, scanner in scanners:
             result = scanner(df)
             if result:
-                logging.info(f"ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
+                logging.info(f"BEAR ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
                 log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
-                               "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
+                               "ANCHOR_SCAN_BEAR", "SCANNED", "Bear A formation from anchor scan",
                                entry=result["Close"], sl=result["SL"], target="")
                 break
             
-        time.sleep(0.5)
+        time.sleep(0.3)
     
-    logging.info("Anchor scan complete (daily)")
+    logging.info("Anchor scan complete (daily bear)")
 
 def print_summary(results):
     matches = [r for r in results if r.get("T1")]
     no_match = [r for r in results if r.get("Pattern") == "NO_MATCH"]
     errors = [r for r in results if r.get("Pattern") == "ERROR"]
     print("\n" + "=" * 80)
-    print(f"  NIFTY 50 DAILY SCAN SUMMARY")
+    print(f"  NIFTY 50 BEARISH DAILY SCAN SUMMARY")
     print(f"  Scan Time: {dt.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 80)
     print(f"  Total Stocks Scanned: {len(results)}")
@@ -226,11 +202,11 @@ def print_summary(results):
     print(f"  Errors:              {len(errors)}")
     print("-" * 80)
     if matches:
-        print(f"\n  {'Symbol':<12} {'Pattern':<20} {'Entry':<10} {'SL':<10} {'T1':<10} {'T2':<10} {'RR':<8}")
-        print(f"  {'-'*12} {'-'*20} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
+        print(f"\n  {'Symbol':<12} {'Pattern':<25} {'Entry':<10} {'SL':<10} {'T1':<10} {'T2':<10} {'RR':<8}")
+        print(f"  {'-'*12} {'-'*25} {'-'*10} {'-'*10} {'-'*10} {'-'*10} {'-'*8}")
         for m in sorted(matches, key=lambda x: x.get("RR", 0), reverse=True):
             rr = round(m["RR"], 2) if m.get("RR") else 0
-            print(f"  {m['Symbol']:<12} {m['Pattern']:<20} {m['Close']:<10.2f} {m['SL']:<10.2f} {m['T1']:<10.2f} {m['T2']:<10.2f} {rr:<8.2f}")
+            print(f"  {m['Symbol']:<12} {m['Pattern']:<25} {m['Close']:<10.2f} {m['SL']:<10.2f} {m['T1']:<10.2f} {m['T2']:<10.2f} {rr:<8.2f}")
     print("=" * 80)
 
 def load_program_config():
@@ -238,7 +214,7 @@ def load_program_config():
         cfg_path = os.path.join(os.path.dirname(__file__), "input", "program_config.json")
         if os.path.exists(cfg_path):
             with open(cfg_path) as f:
-                cfg = json.load(f).get("daily", {})
+                cfg = json.load(f).get("bear_trade", {})
             if "timeframe" in cfg:
                 globals().update({"TIMEFRAME_ENTRY": cfg["timeframe"], "TIMEFRAME_ANCHOR": cfg["timeframe"]})
             if "lookback_days" in cfg: globals().update({"LOOKBACK_DAYS": int(cfg["lookback_days"])})
@@ -249,7 +225,7 @@ def main():
     load_program_config()
     anchor_only = "--anchor-only" in sys.argv
     logging.info("=" * 60)
-    logging.info("  NIFTY 50 DAILY TIMEFRAME SCANNER")
+    logging.info("  NIFTY 50 BEARISH DAILY REVERSAL SCANNER")
     logging.info("=" * 60)
     try:
         ak, at = load_kite_session()
@@ -257,33 +233,20 @@ def main():
         kite.set_access_token(at)
         sync_stock_tokens(kite)
         if anchor_only:
-            logging.info("Running anchor-only scan (daily)...")
+            logging.info("Running anchor-only scan (daily bear)...")
             run_anchor_scan(kite)
             return
-        logging.info(f"Scanning {len(STOCK_REGISTRY)} stocks on daily timeframe...")
+        logging.info(f"Scanning {len(STOCK_REGISTRY)} stocks for Bearish setups...")
         logging.info(f"Lookback: {LOOKBACK_DAYS} days")
-        
-        if os.path.exists(ANCHOR_SCAN_REQUEST_FILE):
-            try:
-                with open(ANCHOR_SCAN_REQUEST_FILE) as f:
-                    engine = f.read().strip()
-                os.remove(ANCHOR_SCAN_REQUEST_FILE)
-                if engine != "daily":
-                    logging.info(f"Anchor scan flag not for daily, skipping (got {engine})")
-                else:
-                    logging.info(f"Anchor scan requested via flag file (engine: {engine})")
-                    run_anchor_scan(kite)
-            except Exception:
-                pass
         
         results = run_scan(kite)
         print_summary(results)
         out = export_results(results)
-        logging.info(f"Results exported to: {os.path.abspath(out)}")
+        logging.info(f"Bearish Results exported to: {os.path.abspath(out)}")
         print(f"\n  Report saved: {os.path.abspath(out)}")
         print()
     except Exception as e:
-        logging.error(f"Scanner failed: {e}")
+        logging.error(f"Bearish Scanner failed: {e}")
         import traceback
         traceback.print_exc()
 

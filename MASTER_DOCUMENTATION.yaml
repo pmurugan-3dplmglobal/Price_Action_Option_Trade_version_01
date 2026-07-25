@@ -1,0 +1,129 @@
+# Price Action Trading Strategy — Master Documentation (Prod Code v02)
+# Consolidated Master Reference Blueprint
+
+meta:
+  name: Price Action Unified Strategy System
+  version: Prod Code v02
+  platform: Zerodha Kite Connect API
+  architecture: Centralized Shared Core (common/) + Dual Workspaces (Trade_Option & Trade_Stock)
+  strategy: Unified ABC Bullish & Bearish Reversal Pattern Engine
+  coverage:
+    - Index Options (NIFTY, BANKNIFTY, SENSEX)
+    - Stock Options (50 Nifty 50 constituent stocks)
+    - Stock Spot Bullish Reversals (Nifty_Stock_BearReversal_Bull_trade)
+    - Stock Spot Bearish Reversals (Nifty_Stock_BullReversal_Bear_trade)
+
+architecture:
+  diagram: |
+    Browser (localhost:5050 / localhost:5051)
+      ├── Trade_Option Dashboard (app_option_Trade.py: 5050)
+      │     ├── Index Trade Engine (bull_index_trade_engine.py)
+      │     └── Stock Options Executor (bull_nifty50_scanner_executor.py)
+      └── Trade_Stock Dashboard (app_Sock_Trade.py: 5051)
+            ├── Stock Bull Reversal (bull_nifty50_daily_scanner_export.py)
+            └── Stock Bear Reversal (Nifty_Stock_BullReversal_Bear_trade.py)
+                  │
+                  ▼
+          Centralized Shared Core (common/)
+            ├── trading_core.py (Scanners, Negation Theory, Resampling, Registries)
+            ├── trade_db.py (Thread-safe JSON persistence & staging)
+            └── Kite_Access_Token_gen.py (Daily Zerodha OAuth token CLI)
+
+  directory:
+    common:
+      trading_core.py: "Centralized strategy core: scan_anchor_bcd_breakout_generic, 5 Bullish + 5 Bearish anchor detectors, find_profit_targets, find_profit_targets_bearish, resample_timeframe (4h), get_adaptive_lookback, STOCK_REGISTRY (50 stocks), INDEX_REGISTRY (NIFTY, BANKNIFTY, SENSEX), session loading, market hours check, journal writer"
+      trade_db.py: "Thread-safe JSON trade database, cycle staging, and executed pattern deduplication"
+      Kite_Access_Token_gen.py: "Zerodha Kite OAuth access token generator CLI"
+    Trade_Option:
+      app_option_Trade.py: "Options Dashboard (port 5050)"
+      bull_index_trade_engine.py: "Intraday index options engine (NIFTY, BANKNIFTY, SENSEX)"
+      bull_nifty50_scanner_executor.py: "Nifty 50 stock options scanner & executor"
+    Trade_Stock:
+      app_Sock_Trade.py: "Stock Trade Dashboard (port 5051)"
+      bull_nifty50_daily_scanner_export.py: "Nifty_Stock_BearReversal_Bull_trade (Bullish Reversal Scanner)"
+      Nifty_Stock_BullReversal_Bear_trade.py: "Nifty_Stock_BullReversal_Bear_trade (Bearish Reversal Scanner)"
+
+config_precedence:
+  priority_1: "Manual UI User Edits (overrides in sl_target_overrides.json & active_positions_db.json)"
+  priority_2: "Persistent Config / Stored DB (input/program_config.json, trades_db.json)"
+  priority_3: "Adaptive Defaults (calculated dynamically based on active timeframe & asset class)"
+
+timeframe_resampling:
+  native_kite_tfs: ["minute", "3minute", "5minute", "10minute", "15minute", "30minute", "60minute", "day"]
+  resampled_tfs:
+    "4h": "Resampled from 60minute candles into 240min bars using Pandas resample('240min')"
+  adaptive_lookback:
+    intraday: "30 - 60 calendar days for 3m/5m/10m/15m/30m"
+    hourly: "180 - 365 calendar days for 60m/4h"
+    daily: "2000 calendar days for day/1d (extracts 52-week & multi-year swing targets)"
+
+strategy_rules:
+  pattern_priority:
+    - "1. Bullish Engulfing / Bearish Engulfing (ABCD)"
+    - "2. Lower Low (LL) Sweep / Higher High (HH) Sweep"
+    - "3. Two Higher Highs / Two Lower Lows"
+    - "4. Baby Candle / Shooting Star"
+    - "5. Bullish Harami / Bearish Harami"
+    - "Rule: First valid pattern matching R:R >= 1.88 triggers setup."
+
+  risk_management:
+    check_interval: "Every 5 seconds / WebSocket heartbeat daemon"
+    stages:
+      sl_hit: "Exit full position (EXIT_SL)"
+      t1_hit: "Move SL to Entry / Breakeven (TRAIL_BE)"
+      t2_hit: "Move SL to T1 level (TRAIL_T1)"
+      t3_hit: "Exit full position (EXIT_T3)"
+
+  bullish_patterns:
+    - name: "Bullish Engulfing (A-B-C-D)"
+      anchor: "Bullish candle wrapping prior bearish candle body+wick"
+      rules: "B close > A.high, C retests anchor zone, D confirmation close > A.high"
+      sl: "A.low - buffer"
+      targets: "Negation theory non-negated swing high resistance levels T1, T2, T3"
+    - name: "Lower Low (LL) Sweep"
+      anchor: "Sweep candle dips below Low1; bounce candle recovers & closes above sweep high"
+      sl: "Sweep Candle Low - buffer"
+    - name: "Two Higher Highs"
+      anchor: "Two successive higher-high bullish candles (A1, A2)"
+      sl: "Min(A1.low, A2.low) - buffer"
+    - name: "Baby Candle / Pinbar / Hammer"
+      anchor: "Small baby/hammer candle inside bearish mother body with lower wick"
+      sl: "Baby Low - buffer"
+    - name: "Bullish Harami (Inside Bar)"
+      anchor: "Bullish inside bar inside bearish mother candle body"
+      sl: "Inside Low - buffer"
+
+  bearish_patterns:
+    - name: "Bearish Engulfing (A-B-C-D)"
+      anchor: "Bearish candle wrapping prior bullish candle body+wick"
+      rules: "B close < A.low, C retests anchor zone, D confirmation close < A.low"
+      sl: "A.high + buffer"
+      targets: "Negation theory non-negated swing low support levels T1, T2, T3"
+    - name: "Higher High (HH) Sweep"
+      anchor: "Sweep candle rallies above High1; rejection candle closes back below"
+      sl: "Sweep Candle High + buffer"
+    - name: "Two Lower Lows"
+      anchor: "Two successive lower-low bearish candles (A1, A2)"
+      sl: "Max(A1.high, A2.high) + buffer"
+    - name: "Shooting Star / Bearish Baby Candle"
+      anchor: "Small shooting star/baby candle inside bullish mother body with upper wick"
+      sl: "Baby High + buffer"
+    - name: "Bearish Harami (Inside Bar)"
+      anchor: "Bearish inside bar inside bullish mother candle body"
+      sl: "Inside High + buffer"
+
+registries:
+  indices:
+    NIFTY: {token: 256265, lot_size: 65, strike_step: 50, exchange: "NFO"}
+    BANKNIFTY: {token: 260105, lot_size: 30, strike_step: 100, exchange: "NFO"}
+    SENSEX: {token: 265, lot_size: 10, strike_step: 100, exchange: "BFO"}
+  stocks:
+    count: 50
+    constituents: "All 50 Nifty 50 stocks with auto-sync from Zerodha NSE instrument master"
+
+deployment:
+  cloud_provider: "Oracle Cloud Always Free (4 ARM cores, 24GB RAM, Ubuntu 24.04)"
+  ports:
+    options_dashboard: 5050
+    stock_dashboard: 5051
+

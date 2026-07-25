@@ -1,0 +1,147 @@
+# Price Action Strategy — Unified Architecture Reference (Prod Code v02)
+# Created: 2026-07-25
+
+meta:
+  name: Unified Price Action Trading Strategy Framework
+  version: Prod Code v02
+  platform: Zerodha Kite Connect API
+  architecture_type: Unified Generalized Strategy Core
+  deploy_type: Multi-engine automated intraday & daily trading system
+  coverage:
+    - Index Options (NIFTY, BANKNIFTY, SENSEX)
+    - Stock Options (Nifty 50 constituent stocks)
+    - Stock Spot Bullish Reversals (Nifty_Stock_BearReversal_Bull_trade)
+    - Stock Spot Bearish Reversals (Nifty_Stock_BullReversal_Bear_trade)
+    - Scalable to Nifty Next 100 / Midcaps
+
+hierarchy:
+  configuration_precedence:
+    priority_1: "Manual UI Edits (overrides saved in sl_target_overrides.json / active_positions_db.json)"
+    priority_2: "Persistent Config / DB (input/program_config.json, trades_db.json)"
+    priority_3: "Adaptive Defaults (calculated dynamically based on active timeframe & asset class)"
+
+timeframe_resampling:
+  supported_native_kite_tfs: ["minute", "3minute", "5minute", "10minute", "15minute", "30minute", "60minute", "day"]
+  supported_resampled_tfs:
+    "4h": "Resampled from 60minute candles into 240min bars using Pandas resample()"
+  adaptive_lookback_rules:
+    intraday_tfs:
+      timeframes: ["3minute", "5minute", "10minute", "15minute", "30minute"]
+      lookback_days: "30 - 60 calendar days"
+    hourly_tfs:
+      timeframes: ["60minute", "4h"]
+      lookback_days: "180 - 365 calendar days"
+    daily_tfs:
+      timeframes: ["day", "1d"]
+      lookback_days: "2000 calendar days (scans 52-week & multi-year highs/lows for Negation Theory)"
+
+engines:
+  case_a_index_options:
+    id: "index"
+    name: "Index Options Engine (NIFTY, BANKNIFTY, SENSEX)"
+    file: "bull_index_trade_engine.py"
+    asset_class: "INDEX_OPTION"
+    side: "BULL"
+    instruments: ["NIFTY", "BANKNIFTY", "SENSEX"]
+    strike_range: "ATM ± X strikes (configurable in program_config.json / UI)"
+    defaults: {timeframe_entry: "3minute", timeframe_anchor: "15minute", risk_percent: 1.0, capital: 100000}
+
+  case_b_stock_options:
+    id: "nifty50"
+    name: "Nifty 50 Stock Options Engine"
+    file: "bull_nifty50_scanner_executor.py"
+    asset_class: "STOCK_OPTION"
+    side: "BULL"
+    instruments: "Nifty 50 Constituent Stock Options"
+    strike_range: "ATM ± X strikes (configurable in program_config.json / UI)"
+    defaults: {timeframe_entry: "15minute", timeframe_anchor: "30minute", risk_percent: 10.0, capital: 100000}
+
+  case_c_stock_spot_bull:
+    id: "daily"
+    name: "Nifty_Stock_BearReversal_Bull_trade"
+    file: "bull_nifty50_daily_scanner_export.py"
+    asset_class: "STOCK_SPOT"
+    side: "BULL"
+    instruments: "Nifty 50 Constituent Stocks (Spot)"
+    defaults: {timeframe_entry: "day", timeframe_anchor: "day", lookback_days: 2000}
+
+  case_d_stock_spot_bear:
+    id: "bear_trade"
+    name: "Nifty_Stock_BullReversal_Bear_trade"
+    file: "Nifty_Stock_BullReversal_Bear_trade.py"
+    asset_class: "STOCK_SPOT"
+    side: "BEAR"
+    instruments: "Nifty 50 Constituent Stocks (Spot)"
+    defaults: {timeframe_entry: "day", timeframe_anchor: "day", lookback_days: 2000}
+
+strategy_patterns:
+  bullish_setups:
+    - id: 1
+      name: "Bullish Engulfing (A-B-C-D)"
+      anchor: "Bullish engulfing candle wrapping prior bearish body/wick"
+      breakout: "Close > A.high"
+      retest: "Low <= A.high AND Close > A.low"
+      confirmation: "Close > A.high"
+      stop_loss: "A.low - buffer"
+      target_theory: "Negation Theory (non-negated swing high resistance levels T1, T2, T3)"
+
+    - id: 2
+      name: "Lower Low (LL) Sweep"
+      anchor: "Sweep candle dips below Low1; B recovers & closes above sweep high"
+      breakout: "Close > B.high"
+      stop_loss: "Sweep Candle Low - buffer"
+
+    - id: 3
+      name: "Two Higher Highs"
+      anchor: "Two successive higher-high bullish candles (A1, A2)"
+      stop_loss: "Min(A1.low, A2.low) - buffer"
+
+    - id: 4
+      name: "Baby Candle / Pinbar / Hammer"
+      anchor: "Small baby/hammer candle inside bearish mother body with lower wick"
+      stop_loss: "Baby Low - buffer"
+
+    - id: 5
+      name: "Bullish Harami (Inside Bar)"
+      anchor: "Bullish inside bar inside bearish mother candle body"
+      stop_loss: "Inside Low - buffer"
+
+  bearish_setups:
+    - id: 1
+      name: "Bearish Engulfing (A-B-C-D)"
+      anchor: "Bearish engulfing candle wrapping prior bullish body/wick"
+      breakout: "Close < A.low"
+      retest: "High >= A.low AND Close < A.high"
+      confirmation: "Close < A.low"
+      stop_loss: "A.high + buffer"
+      target_theory: "Negation Theory (non-negated swing low support levels T1, T2, T3)"
+
+    - id: 2
+      name: "Higher High (HH) Sweep"
+      anchor: "Sweep candle rallies above High1; rejection candle closes back below"
+      breakout: "Close < B.low"
+      stop_loss: "Sweep Candle High + buffer"
+
+    - id: 3
+      name: "Two Lower Lows"
+      anchor: "Two successive lower-low bearish candles (A1, A2)"
+      stop_loss: "Max(A1.high, A2.high) + buffer"
+
+    - id: 4
+      name: "Shooting Star / Bearish Baby Candle"
+      anchor: "Small shooting star/baby candle inside bullish mother body with upper wick"
+      stop_loss: "Baby High + buffer"
+
+    - id: 5
+      name: "Bearish Harami (Inside Bar)"
+      anchor: "Bearish inside bar inside bullish mother candle body"
+      stop_loss: "Inside High + buffer"
+
+registries:
+  indices:
+    NIFTY: {token: 256265, lot_size: 65, strike_step: 50}
+    BANKNIFTY: {token: 260105, lot_size: 30, strike_step: 100}
+    SENSEX: {token: 265, segment: "BSE", lot_size: 10, strike_step: 100}
+  stocks:
+    count: 50
+    auto_sync: "sync_stock_tokens(kite) syncs tokens live from NSE instrument master"

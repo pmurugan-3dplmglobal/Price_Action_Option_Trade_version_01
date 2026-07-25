@@ -1,4 +1,7 @@
 import os, json, csv, time, threading, subprocess, sys, signal, logging
+COMMON_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "common"))
+if COMMON_DIR not in sys.path:
+    sys.path.insert(0, COMMON_DIR)
 from datetime import datetime as dt
 from flask import Flask, render_template_string, jsonify, request, Response
 from kiteconnect import KiteConnect
@@ -33,7 +36,7 @@ SCAN_DISPLAY_INDEX_FILE = "output/monitor/scan_display_index.json"
 LIVE_EXECUTION_FLAG = "input/nifty50_live.flag"
 LIVE_EXECUTION_FLAG_INDEX = "input/index_live.flag"
 
-DASHBOARD_PORT = 5051
+DASHBOARD_PORT = 5050
 REFRESH_SECONDS = 5
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))

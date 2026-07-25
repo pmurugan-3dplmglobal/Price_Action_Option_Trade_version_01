@@ -4,6 +4,9 @@ import logging
 import time
 import threading
 import sys
+COMMON_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "common"))
+if COMMON_DIR not in sys.path:
+    sys.path.insert(0, COMMON_DIR)
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 from datetime import datetime as dt, timedelta, time as datetime_time

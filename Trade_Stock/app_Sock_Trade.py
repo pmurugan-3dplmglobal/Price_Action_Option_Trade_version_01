@@ -1,4 +1,7 @@
 import os, json, csv, time, threading, subprocess, sys, signal, logging
+COMMON_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "common"))
+if COMMON_DIR not in sys.path:
+    sys.path.insert(0, COMMON_DIR)
 from datetime import datetime as dt
 from flask import Flask, render_template_string, jsonify, request, Response
 from kiteconnect import KiteConnect
@@ -28,54 +31,34 @@ JOURNAL_FILE = "output/monitor/trade_journal.csv"
 INDEX_LOG_FILE = "output/logs/bull_index_trade_engine.log"
 NIFTY50_LOG_FILE = "output/logs/bull_nifty50_scanner.log"
 DAILY_LOG_FILE = "output/logs/bull_daily_scanner.log"
+BEAR_LOG_FILE = "output/logs/bull_bear_daily_scanner.log"
 SCAN_DISPLAY_FILE = "output/monitor/scan_display_data.json"
 SCAN_DISPLAY_INDEX_FILE = "output/monitor/scan_display_index.json"
 LIVE_EXECUTION_FLAG = "input/nifty50_live.flag"
 LIVE_EXECUTION_FLAG_INDEX = "input/index_live.flag"
 
-DASHBOARD_PORT = 5050
+DASHBOARD_PORT = 5051
 REFRESH_SECONDS = 5
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PROGRAMS = {
-    "index": {
-        "name": "Index Trade Engine (Nifty & BankNifty)",
-        "file": "bull_index_trade_engine.py",
-        "desc": "Real-time index options intraday trading (3min)",
-        "color": "#58a6ff",
-        "log_file": INDEX_LOG_FILE,
-        "config_fields": {
-            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["minute","3minute","5minute","10minute","15minute","30minute","60minute"], "default": "3minute"},
-            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["15minute","30minute","60minute","day"], "default": "15minute"},
-            "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
-            "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 15},
-            "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
-            "capital": {"label": "Capital", "type": "number", "default": 100000.0},
-            "strike_range": {"label": "Strike Range (±)", "type": "number", "default": 3}
-        }
-    },
-    "nifty50": {
-        "name": "Nifty 50 Stock Scanner + Executor",
-        "file": "bull_nifty50_scanner_executor.py",
-        "desc": "Scans Nifty 50 stocks, picks best setup, executes (15min)",
-        "color": "#3fb950",
-        "log_file": NIFTY50_LOG_FILE,
-        "config_fields": {
-            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["5minute","10minute","15minute","30minute","60minute"], "default": "15minute"},
-            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["15minute","30minute","60minute","day"], "default": "30minute"},
-            "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
-            "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 300},
-            "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
-            "capital": {"label": "Capital", "type": "number", "default": 100000.0}
-        }
-    },
     "daily": {
-        "name": "Nifty 50 Daily Scanner (Export)",
+        "name": "Nifty_Stock_BearReversal_Bull_trade",
         "file": "bull_nifty50_daily_scanner_export.py",
-        "desc": "Scans Nifty 50 on daily timeframe, exports to Excel",
+        "desc": "Scans Nifty 50 on daily timeframe for Bullish setups, exports to Excel",
         "color": "#d29922",
         "log_file": DAILY_LOG_FILE,
+        "config_fields": {
+            "lookback_days": {"label": "Lookback Days", "type": "number", "default": 120}
+        }
+    },
+    "bear_trade": {
+        "name": "Nifty_Stock_BullReversal_Bear_trade",
+        "file": "Nifty_Stock_BullReversal_Bear_trade.py",
+        "desc": "Scans Nifty 50 on daily timeframe for Bearish setups & Negation targets, exports to Excel",
+        "color": "#f85149",
+        "log_file": BEAR_LOG_FILE,
         "config_fields": {
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 120}
         }
@@ -91,8 +74,8 @@ cached_data = {
     "journal": [],
     "log_tail": {pid: [] for pid in PROGRAMS},
     "stats": {"total_trades": 0, "win_rate": 0, "active_positions": 0, "pnl": 0},
-    "scans": {"index": [], "nifty50": [], "daily": []},
-    "scan_summary": {"index": {"anchors": {}, "abc_matches": {}}, "nifty50": {"anchors": {}, "abc_matches": {}}, "daily": {"anchors": {}, "abc_matches": {}}},
+    "scans": {"daily": [], "bear_trade": []},
+    "scan_summary": {"daily": {"anchors": {}, "abc_matches": {}}, "bear_trade": {"anchors": {}, "abc_matches": {}}},
     "all_trades": [],
     "kite_positions": [],
     "ltp": {},
