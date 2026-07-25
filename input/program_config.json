@@ -12,7 +12,7 @@
     "scan_interval": 15,
     "risk_percent": 1,
     "capital": 100000,
-    "strike_range": 1
+    "strike_range": 0
   },
   "nifty50": {
     "timeframe_entry": "15minute",

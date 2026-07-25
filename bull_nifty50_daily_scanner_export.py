@@ -39,7 +39,7 @@ logging.basicConfig(
 from trading_core import (
     load_kite_session,
     log_to_journal,
-    scan_abc_reversal,
+    scan_anchor_bcd_breakout,
     find_anchor_bullish_engulfing,
     find_anchor_ll_sweep,
     find_anchor_hammer_baby,
@@ -77,7 +77,7 @@ def run_scan(kite):
     from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, 2000))).strftime("%Y-%m-%d")
     to_date = dt.now().strftime("%Y-%m-%d")
     scanners = [
-        ("S1_ABC", scan_abc_reversal),
+        ("S1_Anchor_BCD", scan_anchor_bcd_breakout),
     ]
     results = []
     results_lock = threading.Lock()

@@ -1,6 +1,6 @@
 import os, json, csv, time, threading, subprocess, sys, signal, logging
 from datetime import datetime as dt
-from flask import Flask, render_template_string, jsonify, request
+from flask import Flask, render_template_string, jsonify, request, Response
 from kiteconnect import KiteConnect
 import trade_db
 
@@ -630,6 +630,22 @@ HTML_TEMPLATE = """
             renderScanTab();
         }
 
+        async function scanExport() {
+            try {
+                const r = await fetch('/api/scan/export', {method:'POST'});
+                if (!r.ok) return;
+                const blob = await r.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'scan_export.csv';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch(e) { console.log(e); }
+        }
+
         let _sortPref = {};
 
         function sortTable(th, colIdx) {
@@ -689,7 +705,7 @@ HTML_TEMPLATE = """
             const sd = d.scan_display || {};
             const filter = (document.getElementById('scan-engine-filter') || {}).value || 'all';
             let scanHtml = '';
-            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">EntryTime</th><th onclick="sortTable(this,9)">Result</th><th onclick="sortTable(this,10)">CF</th><th onclick="sortTable(this,11)">RR</th>';
+            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">AncherT</th><th onclick="sortTable(this,9)">EntryTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th>';
             function tradeRow(t, resultBadge) {
                 const entry = t.entry_spot !== undefined && t.entry_spot !== null ? parseFloat(t.entry_spot).toFixed(2) : '-';
                 const sl = t.current_sl !== undefined && t.current_sl !== null ? parseFloat(t.current_sl).toFixed(2) : '-';
@@ -706,39 +722,38 @@ HTML_TEMPLATE = """
                     if (dp.length === 3 && tp.length >= 2)
                         etFormatted = `${dp[2]}-${dp[1]}-${dp[0].slice(-2)} ${tp[0]}:${tp[1]}`;
                 }
-                const res = t.result || '-';
+                const at = t.candle_a_time || '';
+                let atFormatted = '-';
+                if (at) {
+                    const s = at.split('+')[0].replace('T', ' ');
+                    const p = s.split(' ');
+                    const dp = p[0] ? p[0].split('-') : [];
+                    const tp = p[1] ? p[1].split(':') : [];
+                    if (dp.length === 3 && tp.length >= 2)
+                        atFormatted = `${dp[2]}-${dp[1]}-${dp[0].slice(-2)} ${tp[0]}:${tp[1]}`;
+                }
+                let res = t.pattern || t.result || '-';
+                if (res.includes('Engulf')) res = 'BE_ABCD';
+                else if (res.includes('Sweep') || res.includes('LL')) res = 'LL_ABCD';
+                else if (res.includes('Baby') || res.includes('Hammer')) res = 'HAMMER_ABCD';
+                else if (res.includes('Harami')) res = 'HARAMI_ABCD';
+                else if (res.includes('Higher_Highs') || res.includes('Two_Higher')) res = 'HH_ABCD';
+                else if (res.includes('Base')) res = 'BASE_ABCD';
+                else if (res === 'SCAN_READY') res = 'BE_ABCD';
                 const cf = t.carry_forward ? 'Yes' : 'No';
                 const rr = t.rr !== undefined && t.rr !== null ? parseFloat(t.rr).toFixed(2) : '0.00';
-                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td></tr>`;
+                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td></tr>`;
             }
             const engines = filter === 'all' ? ['nifty50', 'index'] : [filter];
             engines.forEach(eng => {
                 const data = sd[eng];
                 if (!data) return;
                 const staged = data.staged_trades || [];
-                const carryFwd = data.carry_forward || [];
-                const activeLive = data.active_live || [];
                 const engLabel = eng === 'nifty50' ? 'Nifty 50' : 'Index';
                 if (staged.length) {
                     scanHtml += '<div class="scan-section-title">[' + engLabel + '] Scan Results (' + staged.length + ')</div>';
                     scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
                     staged.forEach(t => { scanHtml += tradeRow(t, 'badge-open'); });
-                    scanHtml += '</tbody></table></div>';
-                }
-                if (carryFwd.length) {
-                    scanHtml += '<div class="scan-section-title">[' + engLabel + '] Carry Forward (' + carryFwd.length + ')</div>';
-                    scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
-                    carryFwd.forEach(t => { scanHtml += tradeRow(t, 'badge-open'); });
-                    scanHtml += '</tbody></table></div>';
-                }
-                if (activeLive.length) {
-                    scanHtml += '<div class="scan-section-title">[' + engLabel + '] Active (Live) (' + activeLive.length + ')</div>';
-                    scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
-                    activeLive.forEach(t => {
-                        const res = t.result || 'ACTIVE';
-                        const rBadge = res === 'ACTIVE' ? 'badge-open' : (res === 'SL_HIT' ? 'badge-loss' : 'badge-profit');
-                        scanHtml += tradeRow(t, rBadge);
-                    });
                     scanHtml += '</tbody></table></div>';
                 }
             });
@@ -761,8 +776,9 @@ HTML_TEMPLATE = """
             c.appendChild(t);
             setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 2500);
         }
-        function editRow(uid, symbol, sl, t1) {
-            editStates[uid] = {active: true, sl: sl, t1: t1};
+        function editRow(uid, symbol, sl, t1, t2, t3) {
+            const clean = v => (v === '---' || v === '' || v === undefined || v === null) ? '' : v;
+            editStates[uid] = {active: true, sl: clean(sl), t1: clean(t1), t2: clean(t2), t3: clean(t3)};
             renderScanTab(); renderReport();
         }
         function cancelEdit(uid) {
@@ -774,13 +790,15 @@ HTML_TEMPLATE = """
             if (!es) return;
             const newSl = document.getElementById('sl_'+uid)?.value;
             const newT1 = document.getElementById('t1_'+uid)?.value;
+            const newT2 = document.getElementById('t2_'+uid)?.value;
+            const newT3 = document.getElementById('t3_'+uid)?.value;
             if (!newSl || !newT1) return;
             delete editStates[uid];
             try {
                 const r = await fetch('/api/update-position', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({engine: engine, symbol: symbol, current_sl: parseFloat(newSl), t1: parseFloat(newT1)})
+                    body: JSON.stringify({engine: engine, symbol: symbol, current_sl: parseFloat(newSl), t1: parseFloat(newT1), t2: newT2 ? parseFloat(newT2) : null, t3: newT3 ? parseFloat(newT3) : null})
                 });
                 const j = await r.json();
                 if (j.ok) {
@@ -840,13 +858,19 @@ HTML_TEMPLATE = """
                     status: 'ACTIVE',
                     source: 'kite'
                 });
-                const dbMatch = allTrades.find(t => (t.contract || t.symbol) === kp.contract);
+                const dbMatch = allTrades.find(t => {
+                    const tc = (t.contract || '').replace(/\\s+/g, '').toUpperCase();
+                    const ts = (t.symbol || '').replace(/\\s+/g, '').toUpperCase();
+                    const kc = (kp.contract || '').replace(/\\s+/g, '').toUpperCase();
+                    return (tc && (tc === kc || kc.includes(tc) || tc.includes(kc))) || (ts && (ts === kc || kc.includes(ts)));
+                });
                 if (dbMatch) {
                     const last = mergedPositions[mergedPositions.length - 1];
                     last.current_sl = dbMatch.current_sl;
                     last.t1 = dbMatch.t1;
                     last.t2 = dbMatch.t2;
                     last.t3 = dbMatch.t3;
+                    if (dbMatch.pattern) last.pattern = dbMatch.pattern;
                 }
             });
             allTrades.forEach(t => {
@@ -897,20 +921,25 @@ HTML_TEMPLATE = """
                     const es = editStates[uid];
                     let slCell, t1Cell, actCell;
                     if (es && es.active) {
-                        slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px"></td>`;
-                        t1Cell = `<td><input id="t1_${uid}" value="${es.t1}" style="width:60px"></td>`;
-                        actCell = `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${t.engine === 'Index' ? 'index' : 'nifty50'}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
+                        const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
+                        slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px" oninput="editStates['${uid}'].sl=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        t1Cell = `<td><input id="t1_${uid}" value="${es.t1}" style="width:60px" oninput="editStates['${uid}'].t1=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        t2Cell = `<td><input id="t2_${uid}" value="${es.t2}" style="width:60px" oninput="editStates['${uid}'].t2=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        t3Cell = `<td><input id="t3_${uid}" value="${es.t3}" style="width:60px" oninput="editStates['${uid}'].t3=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
+                        actCell = `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${eng2}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
                     } else {
                         slCell = `<td>${slVal}</td>`;
                         t1Cell = `<td>${t1v}</td>`;
+                        t2Cell = `<td>${t2v}</td>`;
+                        t3Cell = `<td>${t3v}</td>`;
                         const canEdit = st === 'active';
                         if (canEdit) {
-                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}')">Edit</button></td>`;
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button></td>`;
                         } else {
                             actCell = `<td></td>`;
                         }
                     }
-                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}<td>${t2v}</td><td>${t3v}</td><td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td>${actCell}</tr>`;
+                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td>${actCell}</tr>`;
                 });
                 posHtml += '</tbody></table>';
             } else {
@@ -919,7 +948,29 @@ HTML_TEMPLATE = """
             document.getElementById('active-positions-body').innerHTML = posHtml;
 
             let jHtml = '';
-            let filteredJournal = journal || [];
+            let filteredJournal = [...(journal || [])];
+            const todayStr = new Date().toISOString().split('T')[0];
+            allTrades.forEach(t => {
+                const st = (t.status || '').toLowerCase();
+                if (st === 'sl_hit' || st === 'target_hit' || st === 'exited') return;
+                const et = (t.created_at || t.entry_time || '');
+                const entryDate = et.split(' ')[0].split('T')[0];
+                if (entryDate && entryDate < todayStr) {
+                    filteredJournal.push({
+                        Timestamp: et,
+                        Symbol: t.contract || t.symbol,
+                        Pattern: t.pattern || 'CARRY_FORWARD',
+                        Action: 'CARRY_FORWARD',
+                        Status: 'ACTIVE',
+                        Entry: t.entry_spot,
+                        SL: t.current_sl,
+                        Target: t.t1,
+                        RR: t.rr || '-',
+                        'P&L %': t.pnl_percent || '-'
+                    });
+                }
+            });
+
             if (journalFilter !== 'all') {
                 filteredJournal = filteredJournal.filter(j => {
                     const sym = (j.Symbol || '').toUpperCase();
@@ -1591,6 +1642,7 @@ HTML_TEMPLATE = """
                                 <option value="index">Index</option>
                             </select>
                             <button class="btn-scan-clear" onclick="clearScanData()" style="padding:2px 10px;background:inherit;border:1px solid #f85149;color:#f85149;border-radius:4px;font-size:10px;cursor:pointer">Clear</button>
+                            <button class="btn-scan-export" onclick="scanExport()" style="padding:2px 10px;background:inherit;border:1px solid #58a6ff;color:#58a6ff;border-radius:4px;font-size:10px;cursor:pointer">Export</button>
                         </div>
                     </div>
                     <div id="scan-body"><p class="empty-state">No scan trades yet</p></div>
@@ -1733,6 +1785,45 @@ def api_scan_clear():
         except Exception:
             pass
     return jsonify({"ok": True})
+
+@app.route("/api/scan/export", methods=["POST"])
+def api_scan_export():
+    try:
+        import io
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Engine", "Symbol", "Contract", "Side", "Entry", "SL", "T1", "T2", "T3",
+                         "Pattern", "EntryTime", "CandleATime", "CarryForward", "RR", "Status"])
+        files = [("Nifty 50", SCAN_DISPLAY_FILE), ("Index", SCAN_DISPLAY_INDEX_FILE)]
+        for label, path in files:
+            full = os.path.join(BASE_DIR, path)
+            if not os.path.exists(full):
+                continue
+            with open(full) as f:
+                data = json.load(f)
+            for t in data.get("staged_trades", []):
+                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
+                                 t.get("entry_spot",""), t.get("current_sl",""),
+                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
+                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
+                                 t.get("carry_forward",""), t.get("rr",""), "Staged"])
+            for t in data.get("active_live", []):
+                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
+                                 t.get("entry_spot",""), t.get("current_sl",""),
+                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
+                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
+                                 t.get("carry_forward",""), t.get("rr",""), "Active"])
+            for t in data.get("carry_forward", []):
+                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
+                                 t.get("entry_spot",""), t.get("current_sl",""),
+                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
+                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
+                                 t.get("carry_forward",""), t.get("rr",""), "CarryFwd"])
+        csv_bytes = output.getvalue().encode("utf-8-sig")
+        return Response(csv_bytes, mimetype="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=scan_export_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 @app.route("/api/journal/clear", methods=["POST"])
 def api_journal_clear():
@@ -1879,8 +1970,15 @@ def api_update_position():
     symbol = data.get("symbol", "")
     current_sl = data.get("current_sl")
     t1 = data.get("t1")
-    if not symbol or current_sl is None or t1 is None:
-        return jsonify({"ok": False, "error": "symbol, current_sl, t1 required"}), 400
+    t2 = data.get("t2")
+    t3 = data.get("t3")
+    if not symbol or (current_sl is None and t1 is None and t2 is None and t3 is None):
+        return jsonify({"ok": False, "error": "symbol and at least one level required"}), 400
+    vals = {}
+    if current_sl is not None and str(current_sl).strip() != "": vals["current_sl"] = float(current_sl)
+    if t1 is not None and str(t1).strip() != "": vals["t1"] = float(t1)
+    if t2 is not None and str(t2).strip() != "": vals["t2"] = float(t2)
+    if t3 is not None and str(t3).strip() != "": vals["t3"] = float(t3)
     overrides = {}
     try:
         if os.path.exists(SL_TARGET_OVERRIDES_FILE):
@@ -1888,28 +1986,47 @@ def api_update_position():
                 overrides = json.load(f)
     except Exception:
         overrides = {}
-    overrides.setdefault(engine, {})[symbol] = {"current_sl": float(current_sl), "t1": float(t1)}
+    overrides.setdefault(engine, {})[symbol] = vals
     os.makedirs(os.path.dirname(SL_TARGET_OVERRIDES_FILE), exist_ok=True)
     with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
         json.dump(overrides, f, indent=2)
+    matched = False
     with data_lock:
+        update_keys = list(vals.keys())
         for t in cached_data.get("all_trades", []):
-            t_sym = t.get("contract") or t.get("symbol") or ""
-            if t_sym == symbol:
-                t["current_sl"] = float(current_sl)
-                t["t1"] = float(t1)
+            t_sym = t.get("symbol") or t.get("contract") or ""
+            if t_sym == symbol or t.get("contract") == symbol:
+                matched = True
+                for k in update_keys: t[k] = vals[k]
                 tid = t.get("id")
                 if tid:
-                    trade_db.update_trade(tid, {"current_sl": float(current_sl), "t1": float(t1)})
+                    trade_db.update_trade(tid, vals)
         for pos_list in [cached_data.get("positions", {})]:
             for pos_key, pos in (pos_list.items() if isinstance(pos_list, dict) else enumerate(pos_list)):
-                if isinstance(pos, dict) and (pos.get("contract") or pos.get("symbol") or "") == symbol:
-                    pos["current_sl"] = float(current_sl)
-                    pos["t1"] = float(t1)
+                if isinstance(pos, dict) and ((pos.get("symbol") or pos.get("contract") or "") == symbol or pos.get("contract") == symbol):
+                    matched = True
+                    for k in update_keys: pos[k] = vals[k]
                     tid = pos.get("id")
                     if tid:
-                        trade_db.update_trade(tid, {"current_sl": float(current_sl), "t1": float(t1)})
-    logging.info(f"Position override queued: {engine}/{symbol} SL={current_sl} T1={t1}")
+                        trade_db.update_trade(tid, vals)
+        if not matched:
+            contract = symbol
+            exchange = "NSE"
+            for kp in cached_data.get("kite_positions", []):
+                if kp.get("contract") == symbol or kp.get("symbol") == symbol:
+                    contract = kp.get("contract", symbol)
+                    exchange = kp.get("exchange", "NSE")
+                    break
+            is_stock = exchange == "NSE"
+            trade_data = {"contract": contract, "entry_spot": 0, "position_type": "stock" if is_stock else "option"}
+            trade_data.update(vals)
+            tid = trade_db.create_trade(engine, symbol, trade_data)
+            entry = {"symbol": symbol, "contract": contract, "id": tid, "engine": engine, "status": "ACTIVE", "position_type": "stock" if is_stock else "option"}
+            entry.update(vals)
+            cached_data["all_trades"].append(entry)
+            cached_data["positions"][symbol] = entry
+            logging.info(f"[OVERRIDE] Created new DB trade for {engine}/{symbol}")
+    logging.info(f"Position override queued: {engine}/{symbol} {vals}")
     return jsonify({"ok": True})
 
 EXPORT_STATE_FILE = "output/monitor/export_state.json"

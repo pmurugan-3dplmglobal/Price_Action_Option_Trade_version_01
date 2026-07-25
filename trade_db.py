@@ -8,10 +8,30 @@ def _read():
     for _ in range(3):
         try:
             with open(TRADES_DB, "r", encoding="utf-8") as f:
-                return json.load(f)
+                db = json.load(f)
+                if "trades" not in db:
+                    db["trades"] = []
+                if "next_id" not in db:
+                    db["next_id"] = 1
+                return db
         except:
             time.sleep(0.05)
     return {"next_id": 1, "trades": []}
+
+ACTIVE_POSITIONS_DB = "output/monitor/active_positions_db.json"
+SCANNED_TRADES_DB = "output/monitor/scanned_trades_db.json"
+JOURNAL_TRADES_DB = "output/monitor/journal_trades_db.json"
+
+def _sync_tab_databases(db):
+    try:
+        trades = db.get("trades", [])
+        active_trades = [t for t in trades if t.get("status") == "ACTIVE"]
+        completed_trades = [t for t in trades if t.get("status") != "ACTIVE"]
+        
+        _write_json(ACTIVE_POSITIONS_DB, {"updated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "positions": active_trades})
+        _write_json(JOURNAL_TRADES_DB, {"updated_at": time.strftime("%Y-%m-%d %H:%M:%S"), "journal_entries": completed_trades})
+    except Exception as e:
+        pass
 
 def _write(db):
     os.makedirs(os.path.dirname(TRADES_DB), exist_ok=True)
@@ -21,6 +41,7 @@ def _write(db):
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(db, f, indent=2)
             os.replace(tmp, TRADES_DB)
+            _sync_tab_databases(db)
             return
         except:
             time.sleep(0.05)

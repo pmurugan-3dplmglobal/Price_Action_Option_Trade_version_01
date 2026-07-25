@@ -13,41 +13,6 @@ import numpy as np
 from kiteconnect import KiteConnect
 import trade_db
 
-LIVE_MARKET_DEPLOYMENT = False
-LOOKBACK_DAYS = 30
-INITIAL_CAPITAL = 100000.0
-MAX_RISK_PERCENT = 1.0
-TOKEN_FILE = "input/kite_access_token.txt"
-STATE_FILE = "output/monitor/stock_positions_state.json"
-SCAN_INTERVAL_SECONDS = 300
-STRIKE_RANGE = 0
-
-TIMEFRAME_ENTRY = "15minute"
-TIMEFRAME_ANCHOR = "30minute"
-BACKTEST_DATE = None
-
-ACTIVE_POSITIONS = {}
-position_lock = threading.Lock()
-NFO_INSTRUMENTS = pd.DataFrame()
-instruments_lock = threading.Lock()
-ANCHOR_SCAN_REQUEST_FILE = os.path.join("output", "monitor", "anchor_scan_request.txt")
-ANCHOR_SCAN_STOP_FILE = os.path.join("output", "monitor", "anchor_scan_stop.txt")
-LIVE_EXECUTION_FLAG = os.path.join("input", "nifty50_live.flag")
-SCAN_DISPLAY_FILE = os.path.join("output", "monitor", "scan_display_data.json")
-SL_TARGET_OVERRIDES_FILE = os.path.join("output", "monitor", "sl_target_overrides.json")
-
-journal_lock = threading.Lock()
-JOURNAL_FILE = "output/monitor/trade_journal.csv"
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("output/logs/bull_nifty50_scanner.log", mode="a", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
-
 from trading_core import (
     load_kite_session,
     log_to_journal,
@@ -56,7 +21,7 @@ from trading_core import (
     check_left_side,
     find_profit_targets,
     calculate_position_size,
-    scan_abc_reversal,
+    scan_anchor_bcd_breakout,
     find_anchor_bullish_engulfing,
     find_anchor_ll_sweep,
     find_anchor_hammer_baby,
@@ -71,6 +36,7 @@ from trading_core import (
     sync_kite_positions as shared_sync_kite,
     write_scan_display_data as shared_write_display,
     derive_sl_targets_for_symbol,
+    lookup_scan_sl_target,
     reconcile_positions as shared_reconcile,
     resolve_option_strikes as shared_resolve_strikes,
     scan_symbol,
@@ -247,6 +213,16 @@ def _process_stock(kite, symbol, config, from_entry, to_entry, from_anchor, to_a
 
 
 def run_scan_cycle(kite):
+    cfg_applied = load_program_config_for_engine("nifty50", [("strike_range", "STRIKE_RANGE")])
+    for k, v in cfg_applied.items():
+        if k == "STRIKE_RANGE": globals()["STRIKE_RANGE"] = int(v) if isinstance(v, (int, float)) else v
+        elif k in ("TIMEFRAME_ENTRY", "TIMEFRAME_ANCHOR"): globals()[k] = v
+        elif k == "LIVE_MARKET_DEPLOYMENT": globals()["LIVE_MARKET_DEPLOYMENT"] = v
+        elif k == "LOOKBACK_DAYS": globals()["LOOKBACK_DAYS"] = int(v)
+        elif k == "SCAN_INTERVAL_SECONDS": globals()["SCAN_INTERVAL_SECONDS"] = int(v)
+        elif k == "MAX_RISK_PERCENT": globals()["MAX_RISK_PERCENT"] = float(v)
+        elif k == "INITIAL_CAPITAL": globals()["INITIAL_CAPITAL"] = float(v)
+
     target_date = BACKTEST_DATE
     if target_date is None:
         ref_now = dt.now()
@@ -261,7 +237,7 @@ def run_scan_cycle(kite):
     to_anchor = ref_now.strftime("%Y-%m-%d")
 
     entry_scanners = [
-        ("Setup_1", scan_abc_reversal),
+        ("Setup_1_Anchor_BCD", scan_anchor_bcd_breakout),
     ]
     anchor_scanners = [
         ("A1", find_anchor_bullish_engulfing),
@@ -274,7 +250,7 @@ def run_scan_cycle(kite):
     scan_order = sorted(STOCK_REGISTRY.keys())
     temp_stored_trades = []
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=5) as pool:
         futures = {}
         for symbol in scan_order:
             config = STOCK_REGISTRY[symbol]
@@ -291,6 +267,8 @@ def run_scan_cycle(kite):
                 result = f.result()
                 if result:
                     temp_stored_trades.extend(result)
+                    with position_lock:
+                        shared_write_display(temp_stored_trades, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
             except Exception as e:
                 logging.error(f"Error processing {symbol}: {e}")
 
@@ -329,18 +307,25 @@ def execute_highest_rr_trade(kite, staged):
     if not contract:
         logging.error(f"Could not resolve option for {sym}")
         return
+    option_token = _resolve_option_token(contract)
     live_ok = LIVE_MARKET_DEPLOYMENT and live_execution_enabled(LIVE_EXECUTION_FLAG)
     if live_ok:
-        pos = {
-            "contract": contract, "entry_spot": cp, "current_sl": best["current_sl"],
-            "t1": best["t1"], "t2": best["t2"], "t3": best["t3"],
-            "trailing_stage": 0, "lot_size": best["lot_size"], "position_size": pos_size,
-            "pattern": best["pattern"], "timeframe": TIMEFRAME_ENTRY,
-            "side": opt_type, "strike": target_strike,
-            "entry_time": dt.now().isoformat()
-        }
-        pos["trade_id"] = trade_db.create_trade("nifty50", sym, {k: v for k, v in pos.items() if k != "trade_id"})
-        ACTIVE_POSITIONS[sym] = pos
+        with position_lock:
+            if sym in ACTIVE_POSITIONS:
+                logging.info(f"{sym} already active; skipping new trade")
+                return
+            pos = {
+                "contract": contract, "option_token": option_token,
+                "entry_spot": cp, "current_sl": best["current_sl"],
+                "t1": best["t1"], "t2": best["t2"], "t3": best["t3"],
+                "trailing_stage": 0, "lot_size": best["lot_size"], "position_size": pos_size,
+                "pattern": best["pattern"], "timeframe": TIMEFRAME_ENTRY,
+                "side": opt_type, "strike": target_strike,
+                "entry_time": dt.now().isoformat(),
+                "position_type": "option"
+            }
+            pos["trade_id"] = trade_db.create_trade("nifty50", sym, {k: v for k, v in pos.items() if k != "trade_id"})
+            ACTIVE_POSITIONS[sym] = pos
         save_state()
     avg_rr = round(_avg_target_rank(best), 2)
     if live_ok:
@@ -406,6 +391,7 @@ def run_anchor_scan(kite):
         ("S2", find_anchor_ll_sweep),
         ("S3", find_anchor_hammer_baby),
         ("S4", find_anchor_bullish_harami),
+        ("S5", find_anchor_two_higher_highs),
     ]
     scan_order = sorted(STOCK_REGISTRY.keys())
     batch_size = 2
@@ -452,7 +438,8 @@ def run_anchor_scan(kite):
 def monitor_active_positions(kite):
     return shared_monitor_positions(kite, STOCK_REGISTRY, ACTIVE_POSITIONS, position_lock,
                                      kite.PRODUCT_NRML, "nifty50", TIMEFRAME_ENTRY,
-                                     trade_db, log_to_journal, save_state)
+                                     trade_db, log_to_journal, save_state,
+                                     live=LIVE_MARKET_DEPLOYMENT)
 
 def position_monitor_loop(kite):
     """Background thread that checks stop-loss, trailing, and targets every 60s."""
@@ -473,7 +460,7 @@ def write_scan_display_data(staged, active):
     return shared_write_display(staged, active, SCAN_DISPLAY_FILE)
 
 def _sync_kite_positions(kite):
-    return shared_sync_kite(kite, STOCK_REGISTRY, ACTIVE_POSITIONS, position_lock, "nifty50", TIMEFRAME_ENTRY)
+    return shared_sync_kite(kite, STOCK_REGISTRY, ACTIVE_POSITIONS, position_lock, "nifty50", TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)
 
 # ──────────────────────────────────────────────
 #  MAIN LOOP — SCAN CYCLE + ANCHOR POLL
@@ -488,30 +475,40 @@ def main_scan_loop(kite):
                 continue
             _sync_counter += 1
             if _sync_counter % 5 == 0 and not BACKTEST_DATE:
-                shared_sync_kite(kite, STOCK_REGISTRY, ACTIVE_POSITIONS, position_lock, "nifty50", TIMEFRAME_ENTRY)
+                shared_sync_kite(kite, STOCK_REGISTRY, ACTIVE_POSITIONS, position_lock, "nifty50", TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)
             if os.path.exists(SL_TARGET_OVERRIDES_FILE):
                 try:
                     with open(SL_TARGET_OVERRIDES_FILE) as f:
                         overrides = json.load(f)
-                    eng_overrides = overrides.get("nifty50", {})
+                    eng_overrides = overrides.pop("nifty50", None)
                     if eng_overrides:
                         with position_lock:
                             for sym, vals in eng_overrides.items():
-                                if sym not in ACTIVE_POSITIONS:
-                                    continue
-                                pos = ACTIVE_POSITIONS[sym]
-                                changed = False
-                                for key in ("current_sl", "t1"):
-                                    if key in vals:
-                                        pos[key] = vals[key]
-                                        changed = True
-                                if changed:
-                                    tid = pos.get("trade_id")
-                                    if tid:
-                                        trade_db.update_trade(tid, {"current_sl": pos["current_sl"], "t1": pos["t1"]})
-                                    logging.info(f"[OVERRIDE] Applied SL/T1 for {sym}: SL={pos['current_sl']} T1={pos['t1']}")
+                                target_pos = None
+                                if sym in ACTIVE_POSITIONS:
+                                    target_pos = ACTIVE_POSITIONS[sym]
+                                else:
+                                    for k, p in ACTIVE_POSITIONS.items():
+                                        if p.get("contract") == sym or p.get("symbol") == sym or sym in k:
+                                            target_pos = p
+                                            break
+                                if target_pos:
+                                    changed = False
+                                    for key in ("current_sl", "t1", "t2", "t3"):
+                                        if key in vals:
+                                            target_pos[key] = vals[key]
+                                            changed = True
+                                    if changed:
+                                        tid = target_pos.get("trade_id")
+                                        if tid:
+                                            trade_db.update_trade(tid, {k: target_pos[k] for k in ("current_sl", "t1", "t2", "t3") if k in target_pos})
+                                        logging.info(f"[OVERRIDE] Applied SL/T for {target_pos.get('contract', sym)}: SL={target_pos.get('current_sl')} T1={target_pos.get('t1')} T2={target_pos.get('t2')} T3={target_pos.get('t3')}")
                             save_state()
-                    os.remove(SL_TARGET_OVERRIDES_FILE)
+                    if overrides:
+                        with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
+                            json.dump(overrides, f, indent=2)
+                    else:
+                        os.remove(SL_TARGET_OVERRIDES_FILE)
                 except Exception as e:
                     logging.warning(f"Override apply failed: {e}")
             logging.info("[BEAT] Starting Nifty 50 scan cycle...")
@@ -675,6 +672,15 @@ def main():
             for t in active:
                 if t["symbol"] not in STOCK_REGISTRY: continue
                 pos = {k: v for k, v in t.items() if k not in ("id", "engine", "symbol", "status", "created_at", "updated_at")}
+                pos.setdefault("pattern", "DB_RECOVERED")
+                pos.setdefault("lot_size", 1)
+                pos.setdefault("entry_spot", 0)
+                pos.setdefault("current_sl", 0)
+                pos.setdefault("t1", 0)
+                pos.setdefault("t2", 0)
+                pos.setdefault("t3", 0)
+                pos.setdefault("trailing_stage", 0)
+                pos.setdefault("position_type", "option")
                 pos["trade_id"] = t["id"]
                 if "entry_time" not in pos:
                     pos["entry_time"] = t.get("created_at") or dt.now().isoformat()
@@ -689,21 +695,40 @@ def main():
                     symbol = next((s for s in STOCK_REGISTRY if s in p["tradingsymbol"]), None)
                     if not symbol or symbol in ACTIVE_POSITIONS:
                         continue
+                    nq = abs(int(p.get("quantity", 0)))
+                    if nq == 0: continue
                     if p["exchange"] == "NFO":
-                        nq = abs(int(p.get("quantity", 0)))
                         lots = nq // STOCK_REGISTRY[symbol]["lot_size"]
                         if lots == 0: continue
                         pos = {
-                            "contract": p["tradingsymbol"], "entry_spot": float(p.get("net_price", 0)),
+                            "contract": p["tradingsymbol"], "option_token": int(p.get("instrument_token", 0)),
+                            "entry_spot": float(p.get("net_price") or p.get("buy_price") or p.get("average_price") or 0),
                             "current_sl": 0, "t1": 0, "t2": 0, "t3": 0,
                             "trailing_stage": 0, "lot_size": STOCK_REGISTRY[symbol]["lot_size"],
                             "position_size": lots, "pattern": "KITE_RECOVERED",
                             "timeframe": TIMEFRAME_ENTRY,
-                            "entry_time": dt.now().isoformat()
+                            "entry_time": dt.now().isoformat(),
+                            "position_type": "option"
                         }
-                        pos["trade_id"] = trade_db.create_trade("nifty50", symbol, {k: v for k, v in pos.items() if k != "trade_id"})
-                        ACTIVE_POSITIONS[symbol] = pos
-                        logging.info(f"Recovered from Kite: {symbol} {p['tradingsymbol']} qty={nq}")
+                    else:
+                        pos = {
+                            "contract": p["tradingsymbol"], "option_token": int(p.get("instrument_token", 0)),
+                            "entry_spot": float(p.get("net_price") or p.get("buy_price") or p.get("average_price") or 0),
+                            "current_sl": 0, "t1": 0, "t2": 0, "t3": 0,
+                            "trailing_stage": 0, "lot_size": 1,
+                            "position_size": nq, "pattern": "KITE_RECOVERED",
+                            "timeframe": TIMEFRAME_ENTRY,
+                            "entry_time": dt.now().isoformat(),
+                            "position_type": "stock"
+                        }
+                    pos["trade_id"] = trade_db.create_trade("nifty50", symbol, {k: v for k, v in pos.items() if k != "trade_id"})
+                    scan_sl = lookup_scan_sl_target(p["tradingsymbol"], symbol, "nifty50", kite, pos["entry_spot"], TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)
+                    if scan_sl:
+                        pos.update(scan_sl)
+                        trade_db.update_trade(pos["trade_id"], scan_sl)
+                        logging.info(f"[KITE_RECOVER] Applied scan SL/Target for {symbol}: SL={scan_sl['current_sl']} T1={scan_sl['t1']} T2={scan_sl['t2']} T3={scan_sl['t3']}")
+                    ACTIVE_POSITIONS[symbol] = pos
+                    logging.info(f"Recovered from Kite: {symbol} {p['tradingsymbol']} qty={nq}")
             except Exception as e:
                 logging.warning(f"Kite position recovery failed: {e}")
             reconcile_positions(kite)
