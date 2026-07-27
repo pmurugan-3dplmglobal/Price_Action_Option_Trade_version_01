@@ -282,13 +282,13 @@ def tail_log(filepath, n=200):
 def compute_stats(positions, journal):
     active = len(positions)
     total = len(journal)
-    wins = sum(1 for j in journal if j.get("P&L %", "").replace("%", "").replace("-", "").strip()
-               and j.get("Action", "").startswith("EXIT_"))
+    wins = sum(1 for j in (journal or []) if str(j.get("P&L %") or "").replace("%", "").replace("-", "").strip()
+               and str(j.get("Action") or "").startswith("EXIT_"))
     win_rate = round((wins / total) * 100, 1) if total > 0 else 0
     pnl = 0.0
-    for j in journal:
+    for j in (journal or []):
         try:
-            pnl_str = j.get("P&L %", "").replace("%", "")
+            pnl_str = str(j.get("P&L %") or "").replace("%", "")
             if pnl_str and pnl_str != "-":
                 pnl += float(pnl_str)
         except Exception:
