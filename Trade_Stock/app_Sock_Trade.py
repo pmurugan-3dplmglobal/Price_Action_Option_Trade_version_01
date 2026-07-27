@@ -743,9 +743,10 @@ HTML_TEMPLATE = """
             }
         }
 
-        // ── Global Edit State & Scan Tab Render ──
         let editStates = {};
-        function renderScanTab() {
+        window._isEditing = false;
+        function renderScanTab(force=false) {
+            if (!force && (window._isEditing || (document.activeElement && document.activeElement.tagName === "INPUT"))) return;
             const d = window._lastData;
             if (!d) return;
             const sd = d.scan_display || {};
@@ -825,11 +826,13 @@ HTML_TEMPLATE = """
         function editRow(uid, symbol, sl, t1, t2, t3) {
             const clean = v => (v === '---' || v === '' || v === undefined || v === null) ? '' : v;
             editStates[uid] = {active: true, sl: clean(sl), t1: clean(t1), t2: clean(t2), t3: clean(t3)};
-            renderScanTab(); renderReport();
+            window._isEditing = true;
+            renderScanTab(true); renderReport(true);
         }
         function cancelEdit(uid) {
             delete editStates[uid];
-            renderScanTab(); renderReport();
+            if (Object.keys(editStates).length === 0) window._isEditing = false;
+            renderScanTab(true); renderReport(true);
         }
         async function saveEdit(uid, symbol, engine) {
             const es = editStates[uid];
@@ -840,6 +843,7 @@ HTML_TEMPLATE = """
             const newT3 = document.getElementById('t3_'+uid)?.value;
             if (!newSl || !newT1) return;
             delete editStates[uid];
+            if (Object.keys(editStates).length === 0) window._isEditing = false;
             try {
                 const r = await fetch('/api/update-position', {
                     method: 'POST',
@@ -859,7 +863,8 @@ HTML_TEMPLATE = """
         }
 
         // ── Main Dashboard Render ──
-        function renderReport() {
+        function renderReport(force=false) {
+            if (!force && (window._isEditing || (document.activeElement && document.activeElement.tagName === "INPUT"))) return;
             const d = window._lastData;
             if (!d) return;
             const stats = d.stats || {};
