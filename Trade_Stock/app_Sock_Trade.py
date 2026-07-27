@@ -982,9 +982,24 @@ HTML_TEMPLATE = """
                     if (st === 'sl_hit') { badge = 'badge-loss'; stLabel = 'SL HIT'; }
                     else if (st === 'target_hit') { badge = 'badge-profit'; stLabel = 'TARGET'; }
                     else if (st === 'exited') { badge = 'badge-closed'; stLabel = 'EXITED'; }
-                    const pnl = t.pnl_percent !== undefined && t.pnl_percent !== null ? t.pnl_percent : (t.pnl || '');
-                    const pnlBadge = pnl !== '' ? (pnl >= 0 ? 'badge-profit' : 'badge-loss') : '';
-                    const ltpVal = t.token ? (ltpData[t.token] || '') : '';
+                    const tokenKey = t.token || t.contract || t.symbol;
+                    const fallbackLtp = tokenKey ? (ltpData[tokenKey] || ltpData[t.contract] || ltpData[t.symbol] || '') : '';
+                    const displayLtp = (t.ltp !== undefined && t.ltp !== null && t.ltp > 0) ? t.ltp : fallbackLtp;
+                    let pnlStr = '';
+                    if (t.pnl !== undefined && t.pnl !== null && t.quantity > 0) {
+                        const rawPnl = parseFloat(t.pnl);
+                        const pctPnl = (t.entry_spot && t.entry_spot > 0) ? ((displayLtp - t.entry_spot) / t.entry_spot * 100).toFixed(2) : '0.00';
+                        pnlStr = `${rawPnl >= 0 ? '+' : ''}${rawPnl.toFixed(2)} (${pctPnl}%)`;
+                    } else if (displayLtp && t.entry_spot && t.entry_spot > 0) {
+                        const rawPnl = (displayLtp - t.entry_spot) * (t.quantity || 1);
+                        const pctPnl = ((displayLtp - t.entry_spot) / t.entry_spot * 100).toFixed(2);
+                        pnlStr = `${rawPnl >= 0 ? '+' : ''}${rawPnl.toFixed(2)} (${pctPnl}%)`;
+                    } else if (t.pnl_percent !== undefined && t.pnl_percent !== null) {
+                        pnlStr = `${t.pnl_percent}%`;
+                    } else if (t.pnl !== undefined && t.pnl !== null) {
+                        pnlStr = `${t.pnl >= 0 ? '+' : ''}${parseFloat(t.pnl).toFixed(2)}`;
+                    }
+                    const pnlBadge = pnlStr ? (pnlStr.includes('-') ? 'badge-loss' : 'badge-profit') : '';
                     const qty = t.quantity || '';
                     const slVal = t.current_sl !== undefined && t.current_sl !== null ? t.current_sl : '';
                     const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '';
@@ -1013,7 +1028,7 @@ HTML_TEMPLATE = """
                             actCell = `<td></td>`;
                         }
                     }
-                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td>${actCell}</tr>`;
+                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${displayLtp || '-'}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnlStr !== '' ? `<span class="badge ${pnlBadge}">${pnlStr}</span>` : '-'}</td>${actCell}</tr>`;
                 });
                 posHtml += '</tbody></table>';
             } else {
