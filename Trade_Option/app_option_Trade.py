@@ -919,30 +919,39 @@ HTML_TEMPLATE = """
             let ltpData = d.ltp || {};
             let mergedPositions = [];
             let seenContracts = new Set();
-            kitePos.forEach(kp => {
-                seenContracts.add(kp.contract);
-                const dbMatch = allTrades.find(t => {
-                    const tc = (t.contract || '').replace(/\\s+/g, '').toUpperCase();
-                    const ts = (t.symbol || '').replace(/\\s+/g, '').toUpperCase();
-                    const kc = (kp.contract || '').replace(/\\s+/g, '').toUpperCase();
-                    return (tc && (tc === kc || kc.includes(tc) || tc.includes(kc))) || (ts && (ts === kc || kc.includes(ts)));
+
+            if (positionFilter === 'all' || positionFilter === 'active') {
+                kitePos.forEach(kp => {
+                    const c_name = kp.contract || kp.symbol;
+                    if (!c_name || seenContracts.has(c_name)) return;
+                    seenContracts.add(c_name);
+                    const dbMatch = allTrades.find(t => {
+                        const tc = (t.contract || '').replace(/\\s+/g, '').toUpperCase();
+                        const ts = (t.symbol || '').replace(/\\s+/g, '').toUpperCase();
+                        const kc = (c_name || '').replace(/\\s+/g, '').toUpperCase();
+                        return (tc && (tc === kc || kc.includes(tc) || tc.includes(kc))) || (ts && (ts === kc || kc.includes(ts)));
+                    });
+                    const item = {
+                        symbol: c_name,
+                        contract: c_name,
+                        engine: kp.exchange === 'NFO' ? 'Index' : 'Nifty 50',
+                        pattern: kp.pattern || (dbMatch && dbMatch.pattern ? dbMatch.pattern : 'KITE_OPEN'),
+                        entry_spot: kp.entry_price,
+                        quantity: kp.quantity,
+                        pnl: kp.pnl,
+                        current_sl: kp.current_sl !== undefined ? kp.current_sl : (dbMatch ? dbMatch.current_sl : ''),
+                        t1: kp.t1 !== undefined ? kp.t1 : (dbMatch ? dbMatch.t1 : ''),
+                        t2: kp.t2 !== undefined ? kp.t2 : (dbMatch ? dbMatch.t2 : ''),
+                        t3: kp.t3 !== undefined ? kp.t3 : (dbMatch ? dbMatch.t3 : ''),
+                        token: dbMatch ? (dbMatch.option_token || dbMatch.index_token || '') : (kp.token || ''),
+                        status: 'ACTIVE',
+                        source: 'kite'
+                    };
+                    mergedPositions.push(item);
                 });
-                mergedPositions.push({
-                    symbol: kp.contract,
-                    engine: kp.exchange === 'NFO' ? 'Index' : 'Nifty 50',
-                    pattern: dbMatch && dbMatch.pattern ? dbMatch.pattern : 'KITE_OPEN',
-                    entry_spot: kp.entry_price,
-                    quantity: kp.quantity,
-                    pnl: kp.pnl,
-                    current_sl: dbMatch ? dbMatch.current_sl : '',
-                    t1: dbMatch ? dbMatch.t1 : '',
-                    t2: dbMatch ? dbMatch.t2 : '',
-                    t3: dbMatch ? dbMatch.t3 : '',
-                    token: dbMatch ? (dbMatch.option_token || dbMatch.index_token || '') : (kp.token || ''),
-                    status: 'ACTIVE',
-                    source: 'kite'
-                });
-            });
+            }
+
+            const dbSeen = new Set();
             allTrades.forEach(t => {
                 const contract = t.contract || t.symbol || '';
                 const inKite = kitePos.some(kp => kp.contract === contract || kp.contract.includes(contract) || contract.includes(kp.contract));
@@ -952,8 +961,14 @@ HTML_TEMPLATE = """
                 if (positionFilter === 'active' && st !== 'active') return;
                 if (positionFilter === 'completed' && st !== 'sl_hit' && st !== 'target_hit' && st !== 'exited') return;
                 if (positionFilter === 'sl_hit' && st !== 'sl_hit') return;
+
+                const dedupKey = (contract + '_' + st + '_' + (t.entry_spot || '')).toUpperCase();
+                if (dbSeen.has(dedupKey)) return;
+                dbSeen.add(dedupKey);
+
                 mergedPositions.push({
                     symbol: t.symbol || contract,
+                    contract: contract,
                     engine: (t.engine === 'index' || (t.symbol||'').includes('NIFTY') || (t.symbol||'').includes('BANK')) ? 'Index' : 'Nifty 50',
                     pattern: t.pattern || '',
                     entry_spot: t.entry_spot !== undefined && t.entry_spot !== null ? t.entry_spot : '',
