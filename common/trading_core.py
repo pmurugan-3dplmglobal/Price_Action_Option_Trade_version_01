@@ -1071,46 +1071,46 @@ def sync_kite_positions(kite, registry, positions_dict, lock, engine, timeframe_
                     if sym in positions_dict:
                         del positions_dict[sym]
                 continue
-                contract = p["tradingsymbol"]
-                entry = float(p.get("net_price") or p.get("buy_price") or p.get("average_price") or 0)
-                lot_size = registry[sym]["lot_size"]
-                is_stock = p.get("exchange", "") == "NSE"
-                with lock:
-                    if sym in positions_dict:
-                        if not positions_dict[sym].get("option_token"):
-                            positions_dict[sym]["option_token"] = int(p.get("instrument_token", 0))
-                        scan_sl = lookup_scan_sl_target(contract, sym, engine, kite, entry, timeframe_entry, timeframe_anchor)
-                        if scan_sl:
-                            for k, v in scan_sl.items():
-                                positions_dict[sym][k] = v
-                            tid = positions_dict[sym].get("trade_id")
-                            if tid:
-                                import trade_db
-                                trade_db.update_trade(tid, scan_sl)
-                        continue
-                    positions_dict[sym] = {
-                        "contract": contract, "option_token": int(p.get("instrument_token", 0)),
-                        "entry_spot": entry,
-                        "current_sl": 0, "t1": 0, "t2": 0, "t3": 0,
-                        "trailing_stage": 0, "lot_size": lot_size if not is_stock else 1,
-                        "position_size": nq // lot_size if not is_stock else nq,
-                        "pattern": "MANUAL_ENTRY",
-                        "timeframe": timeframe_entry, "side": "CE",
-                        "entry_time": dt.now().isoformat(),
-                        "position_type": "stock" if is_stock else "option"
-                    }
-                import trade_db
-                tid = trade_db.create_trade(engine, sym, {"contract": contract, "entry_spot": entry, "current_sl": 0, "t1": 0, "t2": 0, "t3": 0, "lot_size": lot_size, "pattern": "MANUAL_ENTRY", "entry_time": dt.now().isoformat()})
-                with lock:
-                    positions_dict[sym]["trade_id"] = tid
-                logging.info(f"[KITE_SYNC] New manual position: {contract} entry={entry}")
-                scan_sl = lookup_scan_sl_target(contract, sym, engine, kite, entry, timeframe_entry, timeframe_anchor)
-                if scan_sl:
-                    with lock:
+            contract = p["tradingsymbol"]
+            entry = float(p.get("net_price") or p.get("buy_price") or p.get("average_price") or 0)
+            lot_size = registry.get(sym, {}).get("lot_size", 1)
+            is_stock = p.get("exchange", "") == "NSE"
+            with lock:
+                if sym in positions_dict:
+                    if not positions_dict[sym].get("option_token"):
+                        positions_dict[sym]["option_token"] = int(p.get("instrument_token", 0))
+                    scan_sl = lookup_scan_sl_target(contract, sym, engine, kite, entry, timeframe_entry, timeframe_anchor)
+                    if scan_sl:
                         for k, v in scan_sl.items():
                             positions_dict[sym][k] = v
-                    trade_db.update_trade(tid, scan_sl)
-                    logging.info(f"[KITE_SYNC] Applied scan SL/Target for {contract}: SL={scan_sl.get('current_sl')} T1={scan_sl.get('t1')} T2={scan_sl.get('t2')} T3={scan_sl.get('t3')}")
+                        tid = positions_dict[sym].get("trade_id")
+                        if tid:
+                            import trade_db
+                            trade_db.update_trade(tid, scan_sl)
+                    continue
+                positions_dict[sym] = {
+                    "contract": contract, "option_token": int(p.get("instrument_token", 0)),
+                    "entry_spot": entry,
+                    "current_sl": 0, "t1": 0, "t2": 0, "t3": 0,
+                    "trailing_stage": 0, "lot_size": lot_size if not is_stock else 1,
+                    "position_size": nq // lot_size if not is_stock else nq,
+                    "pattern": "MANUAL_ENTRY",
+                    "timeframe": timeframe_entry, "side": "CE",
+                    "entry_time": dt.now().isoformat(),
+                    "position_type": "stock" if is_stock else "option"
+                }
+            import trade_db
+            tid = trade_db.create_trade(engine, sym, {"contract": contract, "entry_spot": entry, "current_sl": 0, "t1": 0, "t2": 0, "t3": 0, "lot_size": lot_size, "pattern": "MANUAL_ENTRY", "entry_time": dt.now().isoformat()})
+            with lock:
+                positions_dict[sym]["trade_id"] = tid
+            logging.info(f"[KITE_SYNC] New manual position: {contract} entry={entry}")
+            scan_sl = lookup_scan_sl_target(contract, sym, engine, kite, entry, timeframe_entry, timeframe_anchor)
+            if scan_sl:
+                with lock:
+                    for k, v in scan_sl.items():
+                        positions_dict[sym][k] = v
+                trade_db.update_trade(tid, scan_sl)
+                logging.info(f"[KITE_SYNC] Applied scan SL/Target for {contract}: SL={scan_sl.get('current_sl')} T1={scan_sl.get('t1')} T2={scan_sl.get('t2')} T3={scan_sl.get('t3')}")
     except Exception as e:
         logging.warning(f"Kite position sync failed: {e}")
 
