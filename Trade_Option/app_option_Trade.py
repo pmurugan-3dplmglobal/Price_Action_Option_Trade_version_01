@@ -9,7 +9,8 @@ import trade_db
 from trading_core import (
     lookup_scan_sl_target,
     close_position as shared_close_position,
-    close_stock_position as shared_close_stock_position
+    close_stock_position as shared_close_stock_position,
+    clear_executed_exit
 )
 
 app = Flask(__name__)
@@ -2046,6 +2047,7 @@ def api_update_position():
     os.makedirs(os.path.dirname(SL_TARGET_OVERRIDES_FILE), exist_ok=True)
     with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
         json.dump(overrides, f, indent=2)
+    clear_executed_exit(symbol)
     matched = False
     with data_lock:
         update_keys = list(vals.keys())

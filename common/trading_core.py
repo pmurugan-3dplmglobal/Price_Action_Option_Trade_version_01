@@ -950,6 +950,19 @@ def is_contract_exit_executed(contract):
     load_executed_exits()
     return contract in EXECUTED_EXITS
 
+def clear_executed_exit(contract):
+    global EXECUTED_EXITS
+    load_executed_exits()
+    if contract in EXECUTED_EXITS:
+        del EXECUTED_EXITS[contract]
+        try:
+            os.makedirs(os.path.dirname(EXECUTED_EXITS_FILE), exist_ok=True)
+            with open(EXECUTED_EXITS_FILE, "w", encoding="utf-8") as f:
+                json.dump(EXECUTED_EXITS, f, indent=4)
+            logging.info(f"[EXIT GUARD RESET] Reset exit guard for {contract} due to new trade re-entry.")
+        except Exception as e:
+            logging.error(f"Failed to clear executed exit for {contract}: {e}")
+
 def close_position(kite, pos, live_market=True, product=None):
     contract = pos.get("contract") or pos.get("tradingsymbol")
     if not contract:
