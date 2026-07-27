@@ -15,8 +15,8 @@
     "strike_range": 1
   },
   "nifty50": {
-    "timeframe_entry": "75min",
-    "timeframe_anchor": "75min",
+    "timeframe_entry": "60minute",
+    "timeframe_anchor": "60minute",
     "lookback_days": 200,
     "scan_interval": 30,
     "risk_percent": 10,

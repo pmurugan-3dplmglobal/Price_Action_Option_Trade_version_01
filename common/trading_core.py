@@ -474,7 +474,7 @@ def find_anchor_bullish_engulfing(df):
     a_low = float(bull_anchor['low'])
     anchor_close = float(bull_anchor['close'])
     sl_val = calculate_sl_buffer(a_low, side="BULL")
-    return {"Pattern": "BULL_A_ABCD_Engulf", "Close": anchor_close, "SL": sl_val, "Signal": "A_Formation"}
+    return {"Pattern": "BULL_A_ABCD_Engulf", "Close": anchor_close, "SL": sl_val, "Signal": "A_Formation", "CandleATime": str(bull_anchor.get('date', ''))}
 
 def find_anchor_ll_sweep(df):
     """
@@ -522,7 +522,7 @@ def find_anchor_ll_sweep(df):
 
     anchor_close = float(bounce_candle['close'])
     sl_val = calculate_sl_buffer(sweep_low, side="BULL")
-    return {"Pattern": pattern_name, "Close": anchor_close, "SL": sl_val, "Signal": "Low2_Formation"}
+    return {"Pattern": pattern_name, "Close": anchor_close, "SL": sl_val, "Signal": "Low2_Formation", "CandleATime": str(sweep_candle.get('date', ''))}
 
 def find_anchor_hammer_baby(df):
     """A = baby/hammer candle completely inside bearish mother's body, with long lower wick."""
@@ -548,7 +548,7 @@ def find_anchor_hammer_baby(df):
     anchor_close = float(baby_candle['close'])
     b_low = float(baby_candle['low'])
     sl_val = calculate_sl_buffer(b_low, side="BULL")
-    return {"Pattern": "BULL_A_Baby_Candle", "Close": anchor_close, "SL": sl_val, "Signal": "Baby_Formation"}
+    return {"Pattern": "BULL_A_Baby_Candle", "Close": anchor_close, "SL": sl_val, "Signal": "Baby_Formation", "CandleATime": str(baby_candle.get('date', ''))}
 
 def find_anchor_bullish_harami(df):
     """A = bullish inside bar (cin) fully inside bearish mother body."""
@@ -564,7 +564,7 @@ def find_anchor_bullish_harami(df):
         return None
     anchor_close = float(bullish_inside['close'])
     sl_val = calculate_sl_buffer(inside_low, side="BULL")
-    return {"Pattern": "BULL_A_Harami", "Close": anchor_close, "SL": sl_val, "Signal": "Harami_Formation"}
+    return {"Pattern": "BULL_A_Harami", "Close": anchor_close, "SL": sl_val, "Signal": "Harami_Formation", "CandleATime": str(bullish_inside.get('date', ''))}
 
 def find_anchor_two_higher_highs(df):
     """Setup 3: A1 & A2 are two successive higher high candles with bullish engulfing structure."""
@@ -578,7 +578,7 @@ def find_anchor_two_higher_highs(df):
     a_low = min(float(a1['low']), float(a2['low']))
     anchor_close = float(a2['close'])
     sl_val = calculate_sl_buffer(a_low, side="BULL")
-    return {"Pattern": "BULL_A_Two_Higher_Highs", "Close": anchor_close, "SL": sl_val, "Signal": "HigherHigh_Engulf"}
+    return {"Pattern": "BULL_A_Two_Higher_Highs", "Close": anchor_close, "SL": sl_val, "Signal": "HigherHigh_Engulf", "CandleATime": str(a2.get('date', ''))}
 
 # ──────────────────────────────────────────────
 #  ANCHOR BCD BREAKOUT SCANNER (A -> B -> C -> D)
@@ -638,10 +638,11 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
                 if t2 is not None and float(after_a['close'].max()) >= t2:
                     continue
 
+        a_time_val = anchor_match.get("CandleATime") if anchor_match and anchor_match.get("CandleATime") else str(a.get('date', ''))
         anchors.append({
             "idx": a_idx, "a": a, "benchmark": benchmark,
             "invalidation": invalidation, "anchor_name": anchor_name, "a_low": a_low,
-            "t1": t1, "t2": t2, "t3": t3
+            "t1": t1, "t2": t2, "t3": t3, "a_time": a_time_val
         })
 
     valid_matches = []
@@ -743,7 +744,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         }
         pattern_label = short_names.get(anchor_name, "BASE_ABCD")
         d_time_str = str(d.get("date", ""))
-        a_time_str = str(a.get("date", ""))
+        a_time_str = str(cand.get("a_time") or a.get("date", ""))
 
         valid_matches.append({
             "Pattern": pattern_label,
@@ -2047,7 +2048,7 @@ def find_anchor_bearish_engulfing(df):
     a_high = float(bear_anchor['high'])
     anchor_close = float(bear_anchor['close'])
     sl_val = calculate_sl_buffer(a_high, side="BEAR")
-    return {"Pattern": "BEAR_A_ABCD_Engulf", "Close": anchor_close, "SL": sl_val, "Signal": "Bear_A_Formation"}
+    return {"Pattern": "BEAR_A_ABCD_Engulf", "Close": anchor_close, "SL": sl_val, "Signal": "Bear_A_Formation", "CandleATime": str(bear_anchor.get('date', ''))}
 
 def find_anchor_hh_sweep(df):
     """
@@ -2102,7 +2103,7 @@ def find_anchor_hh_sweep(df):
 
     anchor_close = float(rejection_candle['close'])
     sl_val = calculate_sl_buffer(sweep_high, side="BEAR")
-    return {"Pattern": pattern_name, "Close": anchor_close, "SL": sl_val, "Signal": "High2_Formation"}
+    return {"Pattern": pattern_name, "Close": anchor_close, "SL": sl_val, "Signal": "High2_Formation", "CandleATime": str(sweep_candle.get('date', ''))}
 
 def find_anchor_two_lower_lows(df):
     """Setup 3 (Bearish): A1 & A2 are two successive lower low bearish candles."""
@@ -2116,7 +2117,7 @@ def find_anchor_two_lower_lows(df):
     a_high = max(float(a1['high']), float(a2['high']))
     anchor_close = float(a2['close'])
     sl_val = calculate_sl_buffer(a_high, side="BEAR")
-    return {"Pattern": "BEAR_A_Two_Lower_Lows", "Close": anchor_close, "SL": sl_val, "Signal": "LowerLow_Engulf"}
+    return {"Pattern": "BEAR_A_Two_Lower_Lows", "Close": anchor_close, "SL": sl_val, "Signal": "LowerLow_Engulf", "CandleATime": str(a2.get('date', ''))}
 
 def find_anchor_shooting_star_baby(df):
     """Setup 4 (Bearish): A = shooting star / baby candle inside bullish mother body, with long upper wick."""
@@ -2139,7 +2140,7 @@ def find_anchor_shooting_star_baby(df):
     anchor_close = float(baby_candle['close'])
     b_high = float(baby_candle['high'])
     sl_val = calculate_sl_buffer(b_high, side="BEAR")
-    return {"Pattern": "BEAR_A_ShootingStar_Baby", "Close": anchor_close, "SL": sl_val, "Signal": "ShootingStar_Formation"}
+    return {"Pattern": "BEAR_A_ShootingStar_Baby", "Close": anchor_close, "SL": sl_val, "Signal": "ShootingStar_Formation", "CandleATime": str(baby_candle.get('date', ''))}
 
 def find_anchor_bearish_harami(df):
     """Setup 5 (Bearish): A = bearish inside bar fully inside bullish mother body."""
@@ -2155,7 +2156,7 @@ def find_anchor_bearish_harami(df):
         return None
     anchor_close = float(bearish_inside['close'])
     sl_val = calculate_sl_buffer(inside_high, side="BEAR")
-    return {"Pattern": "BEAR_A_Harami", "Close": anchor_close, "SL": sl_val, "Signal": "Bear_Harami_Formation"}
+    return {"Pattern": "BEAR_A_Harami", "Close": anchor_close, "SL": sl_val, "Signal": "Bear_Harami_Formation", "CandleATime": str(bearish_inside.get('date', ''))}
 
 
 # ──────────────────────────────────────────────
@@ -2204,7 +2205,7 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
         a_high = float(anchor_candle['high'])
         a_low = float(anchor_candle['low'])
         a_close = float(anchor_candle['close'])
-        a_date = anchor_candle.get('date', '')
+        a_date = det_result.get("CandleATime") if det_result and det_result.get("CandleATime") else anchor_candle.get('date', '')
 
         anchor_entry_matches = df_entry[df_entry['date'] == a_date] if 'date' in df_entry.columns else pd.DataFrame()
         if anchor_entry_matches.empty:
