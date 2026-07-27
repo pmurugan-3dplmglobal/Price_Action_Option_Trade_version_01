@@ -1725,6 +1725,8 @@ def resolve_option_strikes(nfo_instruments, base_symbol, spot_price, step_size, 
                 (nfo_instruments['instrument_type'] == option_type.upper()) &
                 (nfo_instruments['strike'] == float(strike))
             ].copy()
+            if df.empty:
+                continue
             df['expiry_dt'] = pd.to_datetime(df['expiry']).dt.date
             today = dt.now().date()
             future = df[df['expiry_dt'] >= today].sort_values(by='expiry_dt')

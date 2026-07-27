@@ -191,7 +191,7 @@ def resolve_option_contract(symbol, spot, step, opt_type, target_strike=None):
                     else:
                         sel = future.iloc[0]
                 else:
-                    sel = sub.iloc[0]
+                    sel = sub.iloc[0] if not sub.empty else m.iloc[0]
             return str(sel['tradingsymbol'])
         except Exception as e:
             logging.error(f"Option resolve error for {symbol}: {e}")
