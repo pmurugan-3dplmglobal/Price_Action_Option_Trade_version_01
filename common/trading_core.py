@@ -647,7 +647,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
 
     valid_matches = []
     # ── Phase 2: For each anchor, scan forward B -> C -> D ──
-    for cand in anchors:
+    for cand in reversed(anchors):
         a_idx = cand["idx"]
         a = cand["a"]
         benchmark = cand["benchmark"]
