@@ -11,8 +11,8 @@
   },
   "_backtest": false,
   "index": {
-    "timeframe_entry": "15minute",
-    "timeframe_anchor": "15minute",
+    "timeframe_entry": "30minute",
+    "timeframe_anchor": "30minute",
     "lookback_days": 100,
     "scan_interval": 15,
     "risk_percent": 1,
@@ -20,8 +20,8 @@
     "strike_range": 0
   },
   "nifty50": {
-    "timeframe_entry": "15minute",
-    "timeframe_anchor": "15minute",
+    "timeframe_entry": "30minute",
+    "timeframe_anchor": "30minute",
     "lookback_days": 200,
     "scan_interval": 30,
     "risk_percent": 10,
