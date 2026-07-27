@@ -60,13 +60,14 @@ config_precedence:
 timeframe_resampling:
   native_kite_tfs: ["minute", "3minute", "5minute", "10minute", "15minute", "30minute", "60minute", "day"]
   resampled_tfs:
+    "75min": "Resampled from 15minute candles into 75min bars (5 candles/day: 09:15-10:30, 10:30-11:45, 11:45-13:00, 13:00-14:15, 14:15-15:30) using Pandas resample('75min', offset='15min')"
     "4hr": "Resampled from 60minute candles into 240min bars using Pandas resample('240min')"
     "week": "Resampled from daily candles into Friday-ending weekly bars using Pandas resample('W-FRI')"
   stock_trade_rule: "Trade_Stock scanners default strictly to 'day' candles unless configured via UI/program_config.json"
-  supported_stock_tfs: ["day", "week", "4hr", "1hr", "30min", "15min"]
+  supported_stock_tfs: ["day", "week", "4hr", "1hr", "75min", "30min", "15min"]
   adaptive_lookback:
     intraday: "30 - 60 calendar days for 3m/5m/10m/15m/30m"
-    hourly: "180 - 365 calendar days for 60m/1hr/4hr"
+    hourly: "180 - 365 calendar days for 60m/1hr/75min/4hr"
     daily_weekly: "2000 calendar days for day/1d/week/1w (scans 52-week & multi-year swing targets)"
 
 engines:
@@ -212,3 +213,20 @@ deployment:
   ports:
     options_dashboard: 5050
     stock_dashboard: 5051
+
+pattern_shorthands:
+  description: "Explicit pattern codes used in UI Dashboard table & CSV Export to prevent ambiguity between Bullish and Bearish setups"
+  bullish_patterns:
+    BULL_2HH: "Two Higher Highs Bullish Setup (BULL_A_Two_Higher_Highs)"
+    BULL_LL: "Lower Low Sweep Bullish Setup (BULL_A_LL_Sweep_Var2)"
+    BULL_ENG: "Bullish Engulfing Setup (BULL_A_ABCD_Engulf)"
+    BULL_HAM: "Baby Candle / Hammer Setup (BULL_A_Baby_Candle)"
+    BULL_HAR: "Bullish Harami Setup (BULL_A_Bullish_Harami)"
+    BULL_BASE: "Base ABCD Breakout Setup (BASE_ABCD)"
+  bearish_patterns:
+    BEAR_HH: "Higher High Sweep Bearish Reversal (find_anchor_hh_sweep)"
+    BEAR_2LL: "Two Lower Lows Bearish Setup (find_anchor_two_lower_lows)"
+    BEAR_ENG: "Bearish Engulfing Setup (find_anchor_bearish_engulfing)"
+    BEAR_STAR: "Shooting Star / Bearish Baby Setup (find_anchor_shooting_star_baby)"
+    BEAR_HAR: "Bearish Harami Setup (find_anchor_bearish_harami)"
+  csv_export_alignment: "CSV exports match UI display table 1-to-1 in column order, numeric rounding (2 decimal places), formatted DD-MM-YY HH:MM timestamps, Yes/No CarryForward, and explicit pattern shorthands"

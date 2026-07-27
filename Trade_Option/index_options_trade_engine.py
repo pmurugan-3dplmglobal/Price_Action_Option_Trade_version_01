@@ -32,6 +32,7 @@ from trading_core import (
     find_anchor_bullish_harami,
     find_anchor_two_higher_highs,
     fetch_option_data,
+    fetch_and_resample_candles,
     trading_days_between,
     calc_rr,
     live_execution_enabled,
@@ -153,7 +154,7 @@ def run_scan_cycle(kite):
         ref_now = dt.now()
     else:
         ref_now = target_date
-    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "day": 2000}
+    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
     max_days_entry = limits.get(TIMEFRAME_ENTRY, 180)
     max_days_anchor = limits.get(TIMEFRAME_ANCHOR, 180)
     from_entry = (ref_now - timedelta(days=min(LOOKBACK_DAYS, max_days_entry))).strftime("%Y-%m-%d")
@@ -193,7 +194,7 @@ def run_scan_cycle(kite):
 def run_anchor_scan(kite):
     if not is_market_hours() and LIVE_MARKET_DEPLOYMENT:
         return
-    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "day": 2000}
+    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
     max_days = limits.get(TIMEFRAME_ANCHOR, 180)
     from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
     to_date = dt.now().strftime("%Y-%m-%d")
@@ -217,7 +218,7 @@ def run_anchor_scan(kite):
             current_spot = float(list(spot_quote.values())[0]["last_price"])
         except Exception:
             try:
-                df_spot = pd.DataFrame(kite.historical_data(config["token"], from_date, to_date, TIMEFRAME_ANCHOR))
+                df_spot = fetch_and_resample_candles(kite, config["token"], from_date, to_date, TIMEFRAME_ANCHOR)
                 if df_spot.empty:
                     continue
                 current_spot = float(df_spot.iloc[-1]['close'])
@@ -233,8 +234,8 @@ def run_anchor_scan(kite):
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 tasks = {
-                    pool.submit(kite.historical_data, ce["token"], from_date, to_date, TIMEFRAME_ANCHOR): "ce",
-                    pool.submit(kite.historical_data, pe["token"], from_date, to_date, TIMEFRAME_ANCHOR): "pe",
+                    pool.submit(fetch_and_resample_candles, kite, ce["token"], from_date, to_date, TIMEFRAME_ANCHOR): "ce",
+                    pool.submit(fetch_and_resample_candles, kite, pe["token"], from_date, to_date, TIMEFRAME_ANCHOR): "pe",
                 }
                 for f in as_completed(tasks):
                     key = tasks[f]

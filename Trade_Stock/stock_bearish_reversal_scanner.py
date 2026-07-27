@@ -52,6 +52,7 @@ from trading_core import (
     get_adaptive_lookback,
     resample_timeframe,
     sync_stock_tokens,
+    fetch_and_resample_candles,
     STOCK_REGISTRY,
     SUPER_STOCKS
 )
@@ -71,6 +72,8 @@ def run_scan(kite):
         fetch_tf = "day"
     elif tf_clean in ["3hr", "3h", "180min", "180minute", "4h", "4hour", "240min", "240minute", "1hr", "1h", "60min", "60minute"]:
         fetch_tf = "60minute"
+    elif tf_clean in ["75min", "75mins", "75m", "75minute"]:
+        fetch_tf = "15minute"
     elif tf_clean in ["30min", "30minute"]:
         fetch_tf = "30minute"
     elif tf_clean in ["15min", "15minute"]:
@@ -183,7 +186,7 @@ def run_anchor_scan(kite):
             
         config = STOCK_REGISTRY[symbol]
         try:
-            df = pd.DataFrame(kite.historical_data(config["token"], from_date, to_date, TIMEFRAME_ANCHOR))
+            df = fetch_and_resample_candles(kite, config["token"], from_date, to_date, TIMEFRAME_ANCHOR)
         except Exception as e:
             logging.warning(f"Anchor data failed for {symbol}: {e}")
             continue

@@ -28,6 +28,9 @@ LOOKBACK_LIMITS = {
     "60minute": 400,
     "1hr": 400,
     "1h": 400,
+    "75min": 400,
+    "75mins": 400,
+    "75minute": 400,
     "3hr": 400,
     "3h": 400,
     "180min": 400,
@@ -49,6 +52,7 @@ def get_next_candle_start_time(candle_date, timeframe_str):
         if "week" in tf_s or tf_s in ["w", "1w"]: tf_minutes = 10080
         elif "4h" in tf_s or "240min" in tf_s: tf_minutes = 240
         elif "3h" in tf_s or "180min" in tf_s: tf_minutes = 180
+        elif "75min" in tf_s or tf_s == "75minute" or "75m" in tf_s: tf_minutes = 75
         elif "60min" in tf_s or tf_s == "60minute" or "1hour" in tf_s or "1hr" in tf_s or "1h" in tf_s: tf_minutes = 60
         elif "30min" in tf_s or tf_s == "30minute": tf_minutes = 30
         elif "15min" in tf_s or tf_s == "15minute": tf_minutes = 15
@@ -80,21 +84,25 @@ def get_adaptive_lookback(timeframe_str, asset_class="STOCK_SPOT", user_lookback
     tf_s = str(timeframe_str).lower()
     if "week" in tf_s or tf_s in ["w", "1w"] or "day" in tf_s or tf_s in ["d", "1d"]:
         return 2000
-    elif "4h" in tf_s or "3h" in tf_s or "180min" in tf_s or "240min" in tf_s or "60min" in tf_s or "1hour" in tf_s or "1hr" in tf_s or "1h" in tf_s:
+    elif "4h" in tf_s or "3h" in tf_s or "180min" in tf_s or "240min" in tf_s or "75min" in tf_s or "75m" in tf_s or "60min" in tf_s or "1hour" in tf_s or "1hr" in tf_s or "1h" in tf_s:
         return 365
     else:
         return 60
 
 def resample_timeframe(df, timeframe_str):
     """
-    Resample dataframe candles for custom non-native timeframes (e.g. 3h, 4h, week).
+    Resample dataframe candles for custom non-native timeframes (e.g. 75min, 3h, 4h, week).
     Native Kite TFs (3m, 5m, 10m, 15m, 30m, 60m, day) are returned as is.
     """
     if df is None or df.empty:
         return df
 
     tf_s = str(timeframe_str).lower()
-    if tf_s in ["3hr", "3h", "180min", "180minute"]:
+    origin = None
+    if tf_s in ["75min", "75mins", "75m", "75minute"]:
+        rule = '75min'
+        origin = 'start'
+    elif tf_s in ["3hr", "3h", "180min", "180minute"]:
         rule = '180min'
     elif tf_s in ["4hr", "4h", "4hour", "240min", "240minute"]:
         rule = '240min'
@@ -115,7 +123,10 @@ def resample_timeframe(df, timeframe_str):
 
         hist[time_col] = pd.to_datetime(hist[time_col])
         hist = hist.set_index(time_col)
-        resampled = hist.resample(rule).agg({
+        resample_kwargs = {'rule': rule}
+        if origin:
+            resample_kwargs['origin'] = origin
+        resampled = hist.resample(**resample_kwargs).agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -826,11 +837,45 @@ def _record_completed_scan_trade(contract_name, pattern_label, entry, sl, target
 #  SHARED ENGINE UTILITIES (identical between engines)
 # ──────────────────────────────────────────────
 
+def get_fetch_timeframe(timeframe_str):
+    """
+    Translates any timeframe string (native or custom resampled like 75min, 4hr, 3hr, week)
+    into a valid native Zerodha Kite interval string.
+    Native Kite intervals: ["minute", "3minute", "5minute", "10minute", "15minute", "30minute", "60minute", "day"]
+    """
+    tf_clean = str(timeframe_str).lower()
+    if tf_clean in ["week", "weekly", "w", "1w", "day", "d", "1d"]:
+        return "day"
+    elif tf_clean in ["3hr", "3hrs", "3h", "180min", "180minute", "4hr", "4hrs", "4h", "4hour", "240min", "240minute", "1hr", "1hrs", "1h", "60min", "60minute"]:
+        return "60minute"
+    elif tf_clean in ["75min", "75mins", "75m", "75minute"]:
+        return "15minute"
+    elif tf_clean in ["30min", "30minute"]:
+        return "30minute"
+    elif tf_clean in ["15min", "15minute"]:
+        return "15minute"
+    elif tf_clean in ["10min", "10minute"]:
+        return "10minute"
+    elif tf_clean in ["5min", "5minute"]:
+        return "5minute"
+    elif tf_clean in ["3min", "3minute"]:
+        return "3minute"
+    elif tf_clean in ["minute", "1min"]:
+        return "minute"
+    else:
+        return "day"
+
+def fetch_and_resample_candles(kite, token, from_date, to_date, timeframe_str):
+    fetch_tf = get_fetch_timeframe(timeframe_str)
+    raw = kite.historical_data(token, from_date, to_date, fetch_tf)
+    df = pd.DataFrame(raw)
+    return resample_timeframe(df, timeframe_str)
+
 def fetch_option_data(kite, token, from_date, to_date, primary_tf, fallback_tf, min_candles=5):
-    df = pd.DataFrame(kite.historical_data(token, from_date, to_date, primary_tf))
+    df = fetch_and_resample_candles(kite, token, from_date, to_date, primary_tf)
     if len(df) >= min_candles:
         return df
-    df = pd.DataFrame(kite.historical_data(token, from_date, to_date, fallback_tf))
+    df = fetch_and_resample_candles(kite, token, from_date, to_date, fallback_tf)
     if len(df) >= min_candles:
         logging.info(f"Fallback to {fallback_tf} for token {token} (only {len(df)} candles on {primary_tf})")
     return df
@@ -1142,8 +1187,8 @@ def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry=
         token = q.get(quote_key, {}).get("instrument_token")
         if not token:
             return None
-        df_e = pd.DataFrame(kite.historical_data(token, from_d, to_d, timeframe_entry))
-        df_a = pd.DataFrame(kite.historical_data(token, from_d, to_d, timeframe_anchor))
+        df_e = fetch_and_resample_candles(kite, token, from_d, to_d, timeframe_entry)
+        df_a = fetch_and_resample_candles(kite, token, from_d, to_d, timeframe_anchor)
         if len(df_a) < 5:
             return None
         res = scan_anchor_bcd_breakout(df_e, df_a)
@@ -1334,7 +1379,7 @@ def derive_sl_targets_for_symbol(kite, symbol, entry_price, registry, timeframe_
         if not config:
             return None
         ref_now = dt.now()
-        limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "day": 2000}
+        limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
         max_days = limits.get(timeframe_entry, 200)
         from_d = (ref_now - timedelta(days=min(lookback_days, max_days))).strftime("%Y-%m-%d")
         to_d = ref_now.strftime("%Y-%m-%d")
@@ -1348,8 +1393,8 @@ def derive_sl_targets_for_symbol(kite, symbol, entry_price, registry, timeframe_
         for strike in sorted(set(ce_map) & set(pe_map)):
             ce, pe = ce_map[strike], pe_map[strike]
             for side, opt in [("CE", ce), ("PE", pe)]:
-                df_e = pd.DataFrame(kite.historical_data(opt["token"], from_d, to_d, timeframe_entry))
-                df_a = pd.DataFrame(kite.historical_data(opt["token"], from_d, to_d, timeframe_anchor))
+                df_e = fetch_and_resample_candles(kite, opt["token"], from_d, to_d, timeframe_entry)
+                df_a = fetch_and_resample_candles(kite, opt["token"], from_d, to_d, timeframe_anchor)
                 if len(df_e) < 5 or len(df_a) < 5:
                     continue
                 result = scan_anchor_bcd_breakout(df_e, df_a)
@@ -1478,7 +1523,7 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
         current_spot = float(list(spot_quote.values())[0]["last_price"])
     except Exception:
         try:
-            df_spot = pd.DataFrame(kite.historical_data(config["token"], from_entry, to_entry, timeframe_entry))
+            df_spot = fetch_and_resample_candles(kite, config["token"], from_entry, to_entry, timeframe_entry)
             if df_spot.empty:
                 return []
             current_spot = float(df_spot.iloc[-1]['close'])
@@ -1497,12 +1542,12 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
         try:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 tasks = {
-                    pool.submit(kite.historical_data, ce["token"], from_entry, to_entry, timeframe_entry): ("ce", "entry"),
-                    pool.submit(kite.historical_data, pe["token"], from_entry, to_entry, timeframe_entry): ("pe", "entry"),
+                    pool.submit(fetch_and_resample_candles, kite, ce["token"], from_entry, to_entry, timeframe_entry): ("ce", "entry"),
+                    pool.submit(fetch_and_resample_candles, kite, pe["token"], from_entry, to_entry, timeframe_entry): ("pe", "entry"),
                 }
                 if not same_tf:
-                    tasks[pool.submit(kite.historical_data, ce["token"], from_anchor, to_anchor, timeframe_anchor)] = ("ce", "anchor")
-                    tasks[pool.submit(kite.historical_data, pe["token"], from_anchor, to_anchor, timeframe_anchor)] = ("pe", "anchor")
+                    tasks[pool.submit(fetch_and_resample_candles, kite, ce["token"], from_anchor, to_anchor, timeframe_anchor)] = ("ce", "anchor")
+                    tasks[pool.submit(fetch_and_resample_candles, kite, pe["token"], from_anchor, to_anchor, timeframe_anchor)] = ("pe", "anchor")
                 for f in as_completed(tasks):
                     tag, kind = tasks[f]
                     try:
@@ -1640,7 +1685,7 @@ def monitor_active_positions(kite, registry, positions_dict, lock, product_type,
                 token = pos.get("option_token") or registry.get(sym, {}).get("token")
                 if not token:
                     continue
-                df = pd.DataFrame(kite.historical_data(token, from_date, to_date, timeframe_entry))
+                df = fetch_and_resample_candles(kite, token, from_date, to_date, timeframe_entry)
                 if df.empty:
                     continue
                 last = df.iloc[-1]
@@ -1752,7 +1797,7 @@ def simulate_trade_outcome(kite, trade, target_date, resolve_token_fn=None):
         to_str = expiry_limit.strftime("%Y-%m-%d")
         for attempt in range(3):
             try:
-                df = pd.DataFrame(kite.historical_data(token, from_str, to_str, tf))
+                df = fetch_and_resample_candles(kite, token, from_str, to_str, tf)
                 break
             except Exception as e:
                 if "Too many requests" in str(e) and attempt < 2:
@@ -1801,6 +1846,8 @@ def simulate_trade_outcome(kite, trade, target_date, resolve_token_fn=None):
 def resolve_option_strikes(nfo_instruments, base_symbol, spot_price, step_size, option_type, n_range=0):
     """Return ATM strike plus n_range strikes ITM/OTM. nfo_instruments can be None for derived calls."""
     if nfo_instruments is None:
+        return []
+    if nfo_instruments is None or nfo_instruments.empty or 'name' not in nfo_instruments.columns:
         return []
     atm = int(round(spot_price / step_size) * step_size)
     out = []

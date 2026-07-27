@@ -31,6 +31,7 @@ from trading_core import (
     find_anchor_bullish_harami,
     find_anchor_two_higher_highs,
     fetch_option_data,
+    fetch_and_resample_candles,
     trading_days_between,
     calc_rr,
     live_execution_enabled,
@@ -235,6 +236,8 @@ def _process_stock(kite, symbol, config, from_entry, to_entry, from_anchor, to_a
 
 
 def run_scan_cycle(kite):
+    if NFO_INSTRUMENTS.empty:
+        sync_instruments(kite)
     cfg_applied = load_program_config_for_engine("nifty50", [("strike_range", "STRIKE_RANGE")])
     for k, v in cfg_applied.items():
         if k == "STRIKE_RANGE": globals()["STRIKE_RANGE"] = int(v) if isinstance(v, (int, float)) else v
@@ -250,7 +253,7 @@ def run_scan_cycle(kite):
         ref_now = dt.now()
     else:
         ref_now = target_date
-    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "day": 2000}
+    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
     max_days_entry = limits.get(TIMEFRAME_ENTRY, 180)
     max_days_anchor = limits.get(TIMEFRAME_ANCHOR, 180)
     from_entry = (ref_now - timedelta(days=min(LOOKBACK_DAYS, max_days_entry))).strftime("%Y-%m-%d")
@@ -405,7 +408,7 @@ def execute_highest_rr_trade(kite, staged):
 # ──────────────────────────────────────────────
 
 def run_anchor_scan(kite):
-    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "day": 2000}
+    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
     max_days = limits.get(TIMEFRAME_ANCHOR, 180)
     from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
     to_date = dt.now().strftime("%Y-%m-%d")
@@ -431,8 +434,8 @@ def run_anchor_scan(kite):
                 with position_lock:
                     if symbol in ACTIVE_POSITIONS:
                         continue
-                tasks[pool.submit(lambda cfg=config: pd.DataFrame(
-                    kite.historical_data(cfg["token"], from_date, to_date, TIMEFRAME_ANCHOR)
+                tasks[pool.submit(lambda cfg=config: fetch_and_resample_candles(
+                    kite, cfg["token"], from_date, to_date, TIMEFRAME_ANCHOR
                 ))] = symbol
             for f in as_completed(tasks):
                 symbol = tasks[f]

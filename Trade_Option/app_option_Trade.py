@@ -56,8 +56,8 @@ PROGRAMS = {
         "color": "#58a6ff",
         "log_file": INDEX_LOG_FILE,
         "config_fields": {
-            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "3minute"},
-            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "15minute"},
+            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","75min","day"], "default": "3minute"},
+            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","75min","day"], "default": "15minute"},
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
             "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 15},
             "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
@@ -72,8 +72,8 @@ PROGRAMS = {
         "color": "#3fb950",
         "log_file": NIFTY50_LOG_FILE,
         "config_fields": {
-            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "15minute"},
-            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "30minute"},
+            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","75min","day"], "default": "15minute"},
+            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","75min","day"], "default": "30minute"},
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
             "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 300},
             "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
@@ -800,13 +800,16 @@ HTML_TEMPLATE = """
                         atFormatted = `${dp[2]}-${dp[1]}-${dp[0].slice(-2)} ${tp[0]}:${tp[1]}`;
                 }
                 let res = t.pattern || t.result || '-';
-                if (res.includes('Engulf')) res = 'BE_ABCD';
-                else if (res.includes('Sweep') || res.includes('LL')) res = 'LL_ABCD';
-                else if (res.includes('Baby') || res.includes('Hammer')) res = 'HAMMER_ABCD';
-                else if (res.includes('Harami')) res = 'HARAMI_ABCD';
-                else if (res.includes('Higher_Highs') || res.includes('Two_Higher')) res = 'HH_ABCD';
-                else if (res.includes('Base')) res = 'BASE_ABCD';
-                else if (res === 'SCAN_READY') res = 'BE_ABCD';
+                if (res.includes('Engulf')) res = res.includes('Bear') || res.includes('BEAR') ? 'BEAR_ENG' : 'BULL_ENG';
+                else if (res.includes('Two_Higher') || res.includes('Higher_Highs')) res = 'BULL_2HH';
+                else if (res.includes('Two_Lower') || res.includes('Lower_Lows')) res = 'BEAR_2LL';
+                else if (res.includes('HH_Sweep') || res.includes('HH_sweep')) res = 'BEAR_HH';
+                else if (res.includes('Sweep') || res.includes('LL')) res = 'BULL_LL';
+                else if (res.includes('Star') || res.includes('Shooting')) res = 'BEAR_STAR';
+                else if (res.includes('Baby') || res.includes('Hammer')) res = 'BULL_HAM';
+                else if (res.includes('Harami')) res = res.includes('Bear') || res.includes('BEAR') ? 'BEAR_HAR' : 'BULL_HAR';
+                else if (res.includes('Base')) res = 'BULL_BASE';
+                else if (res === 'SCAN_READY') res = 'BULL_ENG';
                 const cf = t.carry_forward ? 'Yes' : 'No';
                 const rr = t.rr !== undefined && t.rr !== null ? parseFloat(t.rr).toFixed(2) : '0.00';
                 return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td></tr>`;
@@ -1887,14 +1890,60 @@ def api_scan_clear():
             pass
     return jsonify({"ok": True})
 
+def _format_pattern_result(p):
+    if not p: return '-'
+    p_str = str(p)
+    if 'Engulf' in p_str:
+        return 'BEAR_ENG' if 'Bear' in p_str or 'BEAR' in p_str else 'BULL_ENG'
+    elif 'Two_Higher' in p_str or 'Higher_Highs' in p_str:
+        return 'BULL_2HH'
+    elif 'Two_Lower' in p_str or 'Lower_Lows' in p_str:
+        return 'BEAR_2LL'
+    elif 'HH_Sweep' in p_str or 'HH_sweep' in p_str:
+        return 'BEAR_HH'
+    elif 'Sweep' in p_str or 'LL' in p_str:
+        return 'BULL_LL'
+    elif 'Star' in p_str or 'Shooting' in p_str:
+        return 'BEAR_STAR'
+    elif 'Baby' in p_str or 'Hammer' in p_str:
+        return 'BULL_HAM'
+    elif 'Harami' in p_str:
+        return 'BEAR_HAR' if 'Bear' in p_str or 'BEAR' in p_str else 'BULL_HAR'
+    elif 'Base' in p_str:
+        return 'BULL_BASE'
+    elif p_str == 'SCAN_READY':
+        return 'BULL_ENG'
+    return p_str
+
+def _format_timestamp(ts):
+    if not ts: return '-'
+    try:
+        s = str(ts).split('+')[0].replace('T', ' ')
+        p = s.split(' ')
+        dp = p[0].split('-') if p[0] else []
+        tp = p[1].split(':') if len(p) > 1 and p[1] else []
+        if len(dp) == 3 and len(tp) >= 2:
+            return f"{dp[2]}-{dp[1]}-{dp[0][-2:]} {tp[0]}:{tp[1]}"
+        return s
+    except Exception:
+        return str(ts)
+
+def _format_float(val, dec=2):
+    if val is None or val == '' or val == '-':
+        return '-'
+    try:
+        return f"{float(val):.{dec}f}"
+    except Exception:
+        return str(val)
+
 @app.route("/api/scan/export", methods=["POST"])
 def api_scan_export():
     try:
         import io
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Engine", "Symbol", "Contract", "Side", "Entry", "SL", "T1", "T2", "T3",
-                         "Pattern", "EntryTime", "CandleATime", "CarryForward", "RR", "Status"])
+        writer.writerow(["Symbol", "Contract", "Side", "Entry", "SL", "T1", "T2", "T3",
+                         "AncherT", "EntryTime", "Result", "CF", "RR", "Engine", "Status"])
         files = [("Nifty 50", SCAN_DISPLAY_FILE), ("Index", SCAN_DISPLAY_INDEX_FILE)]
         for label, path in files:
             full = os.path.join(BASE_DIR, path)
@@ -1902,24 +1951,25 @@ def api_scan_export():
                 continue
             with open(full) as f:
                 data = json.load(f)
-            for t in data.get("staged_trades", []):
-                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
-                                 t.get("entry_spot",""), t.get("current_sl",""),
-                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
-                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
-                                 t.get("carry_forward",""), t.get("rr",""), "Staged"])
-            for t in data.get("active_live", []):
-                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
-                                 t.get("entry_spot",""), t.get("current_sl",""),
-                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
-                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
-                                 t.get("carry_forward",""), t.get("rr",""), "Active"])
-            for t in data.get("carry_forward", []):
-                writer.writerow([label, t.get("symbol",""), t.get("contract",""), t.get("side",""),
-                                 t.get("entry_spot",""), t.get("current_sl",""),
-                                 t.get("t1",""), t.get("t2",""), t.get("t3",""),
-                                 t.get("pattern",""), t.get("entry_time",""), t.get("candle_a_time",""),
-                                 t.get("carry_forward",""), t.get("rr",""), "CarryFwd"])
+            for section_name, status_tag in [("staged_trades", "Staged"), ("active_live", "Active"), ("carry_forward", "CarryFwd")]:
+                for t in data.get(section_name, []):
+                    writer.writerow([
+                        t.get("symbol", ""),
+                        t.get("contract", ""),
+                        t.get("side", ""),
+                        _format_float(t.get("entry_spot")),
+                        _format_float(t.get("current_sl")),
+                        _format_float(t.get("t1")),
+                        _format_float(t.get("t2")),
+                        _format_float(t.get("t3")),
+                        _format_timestamp(t.get("candle_a_time")),
+                        _format_timestamp(t.get("entry_time")),
+                        _format_pattern_result(t.get("pattern") or t.get("result")),
+                        "Yes" if t.get("carry_forward") else "No",
+                        _format_float(t.get("rr")),
+                        label,
+                        status_tag
+                    ])
         csv_bytes = output.getvalue().encode("utf-8-sig")
         return Response(csv_bytes, mimetype="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=scan_export_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"})
