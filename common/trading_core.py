@@ -1278,10 +1278,28 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
 
         staged_list = preserved + new_staged
 
+        # Deduplicate staged trades by symbol: keep freshest entry_time & highest RR
+        symbol_map = {}
+        for t in staged_list:
+            sym = t.get("symbol") or t.get("contract")
+            if not sym:
+                continue
+            if sym not in symbol_map:
+                symbol_map[sym] = t
+            else:
+                prev = symbol_map[sym]
+                prev_time = str(prev.get("entry_time") or "")
+                curr_time = str(t.get("entry_time") or "")
+                if curr_time > prev_time or (curr_time == prev_time and float(t.get("rr", 0)) > float(prev.get("rr", 0))):
+                    symbol_map[sym] = t
+
+        deduped_staged = list(symbol_map.values())
+        deduped_staged.sort(key=lambda x: float(x.get("rr", 0)), reverse=True)
+
         data = {
             "date": today,
             "timestamp": now_str,
-            "staged_trades": staged_list,
+            "staged_trades": deduped_staged,
             "carry_forward": carry_fwd,
             "active_live": active_live
         }
