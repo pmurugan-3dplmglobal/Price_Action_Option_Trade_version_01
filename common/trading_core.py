@@ -1741,8 +1741,10 @@ def resolve_option_strikes(nfo_instruments, base_symbol, spot_price, step_size, 
                     c = sub.iloc[0] if not sub.empty else future.iloc[0]
                 else:
                     c = future.iloc[0]
-            else:
+            elif not df.empty:
                 c = df.iloc[0]
+            else:
+                continue
             out.append({"strike": strike, "token": int(c['instrument_token']), "tradingsymbol": c['tradingsymbol']})
         except Exception as e:
             logging.error(f"Strike resolution error for {base_symbol} {option_type} @ {strike}: {e}")
