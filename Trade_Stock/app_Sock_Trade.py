@@ -431,8 +431,8 @@ def refresh_data():
                         sym = p.get("tradingsymbol", "")
                         if not sym:
                             continue
-                        qty = abs(int(p.get("quantity", 0)))
-                        if qty == 0:
+                        qty = int(p.get("quantity", 0))
+                        if qty <= 0:
                             continue
                         entry_pr = float(p.get("average_price", 0))
                         exch = p.get("exchange", "NSE")

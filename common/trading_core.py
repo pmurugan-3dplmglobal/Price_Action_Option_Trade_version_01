@@ -1006,14 +1006,16 @@ def load_program_config_for_engine(cfg_section, extra_fields=None):
 def sync_kite_positions(kite, registry, positions_dict, lock, engine, timeframe_entry, timeframe_anchor):
     try:
         kite_pos = kite.positions()
-        for plist in [kite_pos.get("day", []), kite_pos.get("net", [])]:
-            for p in plist:
-                sym = next((s for s in registry if s in p.get("tradingsymbol", "")), None)
-                if not sym:
-                    continue
-                nq = abs(int(p.get("quantity", 0)))
-                if nq == 0:
-                    continue
+        for p in kite_pos.get("net", []):
+            sym = next((s for s in registry if s in p.get("tradingsymbol", "")), None)
+            if not sym:
+                continue
+            nq = int(p.get("quantity", 0))
+            if nq <= 0:
+                with lock:
+                    if sym in positions_dict:
+                        del positions_dict[sym]
+                continue
                 contract = p["tradingsymbol"]
                 entry = float(p.get("net_price") or p.get("buy_price") or p.get("average_price") or 0)
                 lot_size = registry[sym]["lot_size"]
