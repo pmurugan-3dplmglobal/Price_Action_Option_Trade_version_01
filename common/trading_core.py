@@ -869,6 +869,10 @@ def close_stock_position(kite, pos, live_market=True, product=None):
     if not contract:
         logging.error("close_stock_position failed: missing contract/symbol name")
         return
+    if is_contract_exit_executed(contract):
+        prev = EXECUTED_EXITS.get(contract, {})
+        logging.info(f"[EXIT GUARD BLOCK] {contract} stock exit order already submitted (Order ID: {prev.get('order_id')}). Skipping duplicate exit call.")
+        return
     target_product = product
     try:
         if kite:
@@ -890,44 +894,81 @@ def close_stock_position(kite, pos, live_market=True, product=None):
         price = round((bid if bid > 0 else ltp) * 0.995, 1)
         qty = pos.get("position_size", pos.get("quantity", 1))
         try:
-            kite.place_order(
+            oid = kite.place_order(
                 variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
                 exchange=kite.EXCHANGE_NSE, transaction_type=kite.TRANSACTION_TYPE_SELL,
                 quantity=qty, order_type=kite.ORDER_TYPE_LIMIT,
                 price=price, product=target_product
             )
-            logging.info(f"Closed stock {contract} with product {target_product}")
+            save_executed_exit(contract, oid, {"type": "LIMIT", "price": price, "qty": qty})
+            logging.info(f"Closed stock {contract} with product {target_product} (Order ID: {oid})")
         except Exception as primary_err:
             logging.warning(f"Primary stock exit with {target_product} failed for {contract}: {primary_err}. Retrying with fallback...")
             alt_product = kite.PRODUCT_MIS if target_product == kite.PRODUCT_CNC else kite.PRODUCT_CNC
-            kite.place_order(
-                variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
-                exchange=kite.EXCHANGE_NSE, transaction_type=kite.TRANSACTION_TYPE_SELL,
-                quantity=qty, order_type=kite.ORDER_TYPE_LIMIT,
-                price=price, product=alt_product
-            )
-            logging.info(f"Fallback stock exit SUCCESS for {contract} with product {alt_product}")
+            try:
+                oid = kite.place_order(
+                    variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
+                    exchange=kite.EXCHANGE_NSE, transaction_type=kite.TRANSACTION_TYPE_SELL,
+                    quantity=qty, order_type=kite.ORDER_TYPE_LIMIT,
+                    price=price, product=alt_product
+                )
+                save_executed_exit(contract, oid, {"type": "LIMIT_ALT", "price": price, "qty": qty})
+                logging.info(f"Fallback stock exit SUCCESS for {contract} with product {alt_product} (Order ID: {oid})")
+            except Exception as alt_err:
+                logging.error(f"Fallback stock exit failed for {contract}: {alt_err}")
     except Exception as e:
         logging.error(f"Stock exit failed for {contract}: {e}")
 
+EXECUTED_EXITS_FILE = os.path.join(os.getcwd(), "output", "monitor", "executed_exit_orders.json")
+EXECUTED_EXITS = {}
+
+def load_executed_exits():
+    global EXECUTED_EXITS
+    if os.path.exists(EXECUTED_EXITS_FILE):
+        try:
+            with open(EXECUTED_EXITS_FILE, "r", encoding="utf-8") as f:
+                EXECUTED_EXITS = json.load(f)
+        except Exception:
+            EXECUTED_EXITS = {}
+
+def save_executed_exit(contract, order_id, details=None):
+    global EXECUTED_EXITS
+    load_executed_exits()
+    EXECUTED_EXITS[contract] = {
+        "order_id": str(order_id),
+        "timestamp": dt.now().isoformat(),
+        "details": details or {}
+    }
+    try:
+        os.makedirs(os.path.dirname(EXECUTED_EXITS_FILE), exist_ok=True)
+        with open(EXECUTED_EXITS_FILE, "w", encoding="utf-8") as f:
+            json.dump(EXECUTED_EXITS, f, indent=4)
+    except Exception as e:
+        logging.error(f"Failed to save executed exit order file: {e}")
+
+def is_contract_exit_executed(contract):
+    load_executed_exits()
+    return contract in EXECUTED_EXITS
+
 def close_position(kite, pos, live_market=True, product=None):
-    if not kite:
-        logging.info(f"[BACKTEST EXIT] Closed {pos.get('contract','')}")
-        return
-    contract = pos.get("contract") or pos.get("symbol")
+    contract = pos.get("contract") or pos.get("tradingsymbol")
     if not contract:
-        logging.error("close_position failed: missing contract name")
+        return
+    if is_contract_exit_executed(contract):
+        prev = EXECUTED_EXITS.get(contract, {})
+        logging.info(f"[EXIT GUARD BLOCK] {contract} exit order already submitted (Order ID: {prev.get('order_id')}). Skipping duplicate exit call.")
+        return
+    if not live_market:
+        logging.info(f"[BACKTEST EXIT] {contract}")
         return
     target_product = product
     try:
-        if kite:
-            net_positions = kite.positions().get("net", [])
-            for p in net_positions:
-                if p.get("tradingsymbol") == contract and abs(int(p.get("quantity", 0))) > 0:
-                    prod = p.get("product")
-                    if prod:
-                        target_product = prod
-                        break
+        if not target_product:
+            kp = kite.positions()
+            for p in (kp.get("day", []) + kp.get("net", [])):
+                if p.get("tradingsymbol") == contract:
+                    target_product = p.get("product")
+                    break
     except Exception as e:
         logging.warning(f"Could not fetch Kite position product for {contract}: {e}")
     if not target_product:
@@ -940,17 +981,18 @@ def close_position(kite, pos, live_market=True, product=None):
         price = round(round(raw_price / 0.05) * 0.05, 2)
         qty = pos.get("quantity") or (get_option_lot_size(contract) or pos.get("lot_size", 1)) * pos.get("position_size", 1)
         try:
-            kite.place_order(
+            oid = kite.place_order(
                 variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
                 exchange=kite.EXCHANGE_NFO, transaction_type=kite.TRANSACTION_TYPE_SELL,
                 quantity=qty, order_type=kite.ORDER_TYPE_LIMIT,
                 price=price, product=target_product
             )
-            logging.info(f"Closed {contract} with LIMIT order price {price} (product {target_product})")
+            save_executed_exit(contract, oid, {"type": "LIMIT", "price": price, "qty": qty})
+            logging.info(f"Closed {contract} with LIMIT order price {price} (Order ID: {oid})")
         except Exception as primary_err:
             logging.warning(f"Primary LIMIT exit with {target_product} failed for {contract}: {primary_err}. Retrying with MARKET order...")
             try:
-                kite.place_order(
+                oid = kite.place_order(
                     variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
                     exchange=kite.EXCHANGE_NFO, transaction_type=kite.TRANSACTION_TYPE_SELL,
                     quantity=qty, order_type=kite.ORDER_TYPE_MARKET,
