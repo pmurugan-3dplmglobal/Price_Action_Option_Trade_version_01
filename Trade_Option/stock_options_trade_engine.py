@@ -289,10 +289,11 @@ def run_scan_cycle(kite):
                 result = f.result()
                 if result:
                     temp_stored_trades.extend(result)
-                    with position_lock:
-                        shared_write_display(temp_stored_trades, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
             except Exception as e:
                 logging.error(f"Error processing {symbol}: {e}")
+
+    with position_lock:
+        shared_write_display(temp_stored_trades, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
 
     if not temp_stored_trades:
         logging.info("No new trades meet criteria this cycle.")

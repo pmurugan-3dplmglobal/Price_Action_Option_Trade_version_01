@@ -182,9 +182,8 @@ def run_scan_cycle(kite):
                              ACTIVE_POSITIONS, position_lock, trade_db, STRIKE_RANGE,
                              log_to_journal)
         temp_stored_trades.extend(trades)
-        if trades:
-            with position_lock:
-                shared_write_display(temp_stored_trades, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "index")
+    with position_lock:
+        shared_write_display(temp_stored_trades, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "index")
     return temp_stored_trades
 
 # ──────────────────────────────────────────────
