@@ -121,12 +121,17 @@ def sync_instruments(kite):
                     synced += 1
             logging.info(f"Synced tokens for {synced} stocks")
         nfo = kite.instruments("NFO")
+        try:
+            bfo = kite.instruments("BFO")
+        except Exception:
+            bfo = []
+        combined = (nfo if nfo else []) + (bfo if bfo else [])
         with instruments_lock:
-            NFO_INSTRUMENTS = pd.DataFrame(nfo)
+            NFO_INSTRUMENTS = pd.DataFrame(combined)
             if not NFO_INSTRUMENTS.empty:
                 NFO_INSTRUMENTS['name'] = NFO_INSTRUMENTS['name'].str.strip().str.upper()
                 NFO_INSTRUMENTS['instrument_type'] = NFO_INSTRUMENTS['instrument_type'].str.strip().str.upper()
-                logging.info(f"Synced {len(NFO_INSTRUMENTS)} NFO contracts")
+                logging.info(f"Synced {len(NFO_INSTRUMENTS)} NFO/BFO contracts")
                 os.makedirs(os.path.dirname(NFO_CACHE_FILE), exist_ok=True)
                 NFO_INSTRUMENTS.to_csv(NFO_CACHE_FILE, index=False)
     pool = ThreadPoolExecutor(max_workers=1)

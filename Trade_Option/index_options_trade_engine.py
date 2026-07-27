@@ -87,10 +87,16 @@ logging.basicConfig(
 def fetch_instruments(kite):
     global instrument_dump
     try:
-        logging.info("Syncing NFO instruments...")
-        instruments = kite.instruments("NFO")
-        instrument_dump = pd.DataFrame(instruments)
-        logging.info(f"Synced {len(instrument_dump)} NFO contracts.")
+        logging.info("Syncing NFO and BFO instruments...")
+        nfo = kite.instruments("NFO")
+        try:
+            bfo = kite.instruments("BFO")
+        except Exception as b_err:
+            logging.warning(f"BFO sync warning: {b_err}")
+            bfo = []
+        combined = (nfo if nfo else []) + (bfo if bfo else [])
+        instrument_dump = pd.DataFrame(combined)
+        logging.info(f"Synced {len(instrument_dump)} NFO/BFO contracts.")
     except Exception as e:
         logging.error(f"Instrument sync failed: {e}")
         raise
