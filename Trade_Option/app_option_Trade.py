@@ -452,11 +452,12 @@ def refresh_data():
 
                         # Fail-Safe Active Position Risk Monitor
                         try:
-                            engine_type = "index" if ("NIFTY" in sym or "BANK" in sym or "SENSEX" in sym) else "nifty50"
-                            scan_sl = lookup_scan_sl_target(sym, sym, engine_type, _kite_session, entry_pr)
+                            contract_name = p.get("tradingsymbol", sym)
+                            engine_type = "index" if ("NIFTY" in contract_name or "BANK" in contract_name or "SENSEX" in contract_name) else "nifty50"
+                            scan_sl = lookup_scan_sl_target(contract_name, contract_name, engine_type, _kite_session, entry_pr)
                             pos_item = {
-                                "contract": sym,
-                                "symbol": sym,
+                                "contract": contract_name,
+                                "symbol": contract_name,
                                 "quantity": qty,
                                 "entry_price": entry_pr,
                                 "entry_spot": entry_pr,
@@ -482,27 +483,27 @@ def refresh_data():
                                 t_stage = int(scan_sl.get("trailing_stage", 0))
                                 tid = scan_sl.get("id")
 
-                                clean_sym = str(sym).replace(" ", "").upper()
+                                clean_sym = str(contract_name).replace(" ", "").upper()
                                 # TASK 1: Pause automated exit execution if user is actively editing this symbol on the UI
                                 if clean_sym in ACTIVE_EDIT_LOCKS:
-                                    logging.info(f"[FAILSAFE PAUSED] {sym} is currently being edited on UI. Automated exit execution paused.")
+                                    logging.info(f"[FAILSAFE PAUSED] {contract_name} is currently being edited on UI. Automated exit execution paused.")
                                 # TASK 2: Only execute exit if SL > 0 (valid SL assigned via auto-fill or manual fill)
                                 elif ltp_val > 0 and sl_val > 0 and ltp_val <= sl_val:
-                                    logging.warning(f"[FAILSAFE MONITOR EXIT SL] {sym} LTP={ltp_val} <= SL={sl_val}")
-                                    pos_obj = {"contract": sym, "position_size": qty, "quantity": qty}
+                                    logging.warning(f"[FAILSAFE MONITOR EXIT SL] {contract_name} LTP={ltp_val} <= SL={sl_val}")
+                                    pos_obj = {"contract": contract_name, "position_size": qty, "quantity": qty}
                                     shared_close_position(_kite_session, pos_obj, True, p.get("product"))
                                 # 2. Check T3 Target Hit Exit
                                 elif ltp_val > 0 and t3_val > 0 and ltp_val >= t3_val:
-                                    logging.info(f"[FAILSAFE MONITOR EXIT T3] {sym} LTP={ltp_val} >= T3={t3_val}")
-                                    pos_obj = {"contract": sym, "position_size": qty, "quantity": qty}
+                                    logging.info(f"[FAILSAFE MONITOR EXIT T3] {contract_name} LTP={ltp_val} >= T3={t3_val}")
+                                    pos_obj = {"contract": contract_name, "position_size": qty, "quantity": qty}
                                     shared_close_position(_kite_session, pos_obj, True, p.get("product"))
-                                # 3. Trailing SL Stage 1 (T1 Hit -> Trail SL to Breakeven / Entry)
-                                elif t_stage == 0 and t1_val > 0 and ltp_val >= t1_val and entry_pr > 0:
-                                    logging.info(f"[FAILSAFE TRAIL 1] {sym} LTP={ltp_val} >= T1={t1_val} -> Trailing SL to Breakeven ({entry_pr})")
+                                # 3. Trailing SL Stage 1 (T1 Hit -> Trail SL to Breakeven / Entry ONLY IF T1 > Entry)
+                                elif t_stage == 0 and t1_val > entry_pr and ltp_val >= t1_val and entry_pr > 0:
+                                    logging.info(f"[FAILSAFE TRAIL 1] {contract_name} LTP={ltp_val} >= T1={t1_val} -> Trailing SL to Breakeven ({entry_pr})")
                                     if tid: trade_db.update_trade(tid, {"current_sl": entry_pr, "trailing_stage": 1})
-                                # 4. Trailing SL Stage 2 (T2 Hit -> Trail SL to T1)
-                                elif t_stage == 1 and t2_val > 0 and ltp_val >= t2_val and t1_val > 0:
-                                    logging.info(f"[FAILSAFE TRAIL 2] {sym} LTP={ltp_val} >= T2={t2_val} -> Trailing SL to T1 ({t1_val})")
+                                # 4. Trailing SL Stage 2 (T2 Hit -> Trail SL to T1 ONLY IF T2 > T1)
+                                elif t_stage == 1 and t2_val > t1_val and ltp_val >= t2_val and t1_val > 0:
+                                    logging.info(f"[FAILSAFE TRAIL 2] {contract_name} LTP={ltp_val} >= T2={t2_val} -> Trailing SL to T1 ({t1_val})")
                                     if tid: trade_db.update_trade(tid, {"current_sl": t1_val, "trailing_stage": 2})
                         except Exception as fs_err:
                             logging.debug(f"Failsafe monitor error for {sym}: {fs_err}")
