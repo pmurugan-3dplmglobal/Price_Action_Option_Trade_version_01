@@ -449,19 +449,29 @@ def refresh_data():
                             if tok_id:
                                 cached_data["ltp"][str(tok_id)] = live_ltp
 
-                        merged.append({
-                            "contract": sym,
-                            "quantity": qty,
-                            "entry_price": entry_pr,
-                            "ltp": live_ltp,
-                            "pnl": live_pnl,
-                            "exchange": exch,
-                            "source": "kite"
-                        })
                         # Fail-Safe Active Position Risk Monitor
                         try:
                             engine_type = "index" if ("NIFTY" in sym or "BANK" in sym or "SENSEX" in sym) else "nifty50"
                             scan_sl = lookup_scan_sl_target(sym, sym, engine_type, _kite_session, entry_pr)
+                            pos_item = {
+                                "contract": sym,
+                                "symbol": sym,
+                                "quantity": qty,
+                                "entry_price": entry_pr,
+                                "entry_spot": entry_pr,
+                                "ltp": live_ltp,
+                                "pnl": live_pnl,
+                                "exchange": exch,
+                                "source": "kite"
+                            }
+                            if scan_sl:
+                                pos_item["current_sl"] = scan_sl.get("current_sl", 0)
+                                pos_item["t1"] = scan_sl.get("t1", 0)
+                                pos_item["t2"] = scan_sl.get("t2", 0)
+                                pos_item["t3"] = scan_sl.get("t3", 0)
+                                pos_item["pattern"] = scan_sl.get("pattern", "SCAN_LINKED")
+                            merged.append(pos_item)
+
                             if scan_sl:
                                 ltp_val = live_ltp
                                 sl_val = float(scan_sl.get("current_sl", 0))
