@@ -171,13 +171,27 @@ def resolve_option_contract(symbol, spot, step, opt_type, target_strike=None):
                 return None
             m['strike'] = m['strike'].astype(float)
             target = target_strike or round(spot / step) * step
-            sub = m[m['strike'] == float(target)]
+            sub = m[m['strike'] == float(target)].copy()
             if sub.empty:
                 idx = (m['strike'] - spot).abs().idxmin()
                 sel = m.loc[idx]
             else:
-                sub = sub.sort_values(by='expiry')
-                sel = sub.iloc[0]
+                sub['expiry_dt'] = pd.to_datetime(sub['expiry']).dt.date
+                today = dt.now().date()
+                future = sub[sub['expiry_dt'] >= today].sort_values(by='expiry_dt')
+                if not future.empty:
+                    expiries = future['expiry_dt'].unique()
+                    curr_exp = expiries[0]
+                    days_rem = (curr_exp - today).days
+                    # 90% Threshold Rule: If <= 3 days remaining to monthly expiry, select NEXT MONTH
+                    if days_rem <= 3 and len(expiries) > 1:
+                        target_exp = expiries[1]
+                        logging.info(f"[STOCK EXPIRY ROLLOVER 90%] {symbol}: {days_rem}d to expiry ({curr_exp}) -> Selected NEXT MONTH ({target_exp})")
+                        sel = future[future['expiry_dt'] == target_exp].iloc[0]
+                    else:
+                        sel = future.iloc[0]
+                else:
+                    sel = sub.iloc[0]
             return str(sel['tradingsymbol'])
         except Exception as e:
             logging.error(f"Option resolve error for {symbol}: {e}")

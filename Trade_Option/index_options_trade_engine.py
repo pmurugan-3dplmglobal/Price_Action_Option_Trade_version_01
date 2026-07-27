@@ -95,12 +95,11 @@ def fetch_instruments(kite):
         logging.error(f"Instrument sync failed: {e}")
         raise
 
-def resolve_option_contract(base_symbol, spot_price, step_size, option_type):
+def resolve_option_contract(base_symbol, spot_price, step_size, option_type, expiry_offset=0):
     global instrument_dump
     if instrument_dump is None or instrument_dump.empty:
         return None
     strike = int(round(spot_price / step_size) * step_size)
-    target_expiry = get_weekly_expiry()
     try:
         df = instrument_dump[
             (instrument_dump['name'] == base_symbol) &
@@ -110,15 +109,18 @@ def resolve_option_contract(base_symbol, spot_price, step_size, option_type):
         if df.empty:
             return None
         df['expiry'] = pd.to_datetime(df['expiry']).dt.date
-        weekly = df[df['expiry'] == target_expiry].sort_values(by='expiry')
-        if not weekly.empty:
-            c = weekly.iloc[0]
-            return {"token": int(c['instrument_token']), "tradingsymbol": c['tradingsymbol']}
         df = df[df['expiry'] >= dt.now().date()].sort_values(by='expiry')
         if df.empty:
             return None
+        expiries = df['expiry'].unique()
+        selected_idx = min(expiry_offset, len(expiries) - 1)
+        target_expiry = expiries[selected_idx]
+        sub = df[df['expiry'] == target_expiry]
+        if not sub.empty:
+            c = sub.iloc[0]
+            return {"token": int(c['instrument_token']), "tradingsymbol": c['tradingsymbol'], "expiry": str(target_expiry)}
         c = df.iloc[0]
-        return {"token": int(c['instrument_token']), "tradingsymbol": c['tradingsymbol']}
+        return {"token": int(c['instrument_token']), "tradingsymbol": c['tradingsymbol'], "expiry": str(c['expiry'])}
     except Exception as e:
         logging.error(f"Contract resolution error: {e}")
         return None
