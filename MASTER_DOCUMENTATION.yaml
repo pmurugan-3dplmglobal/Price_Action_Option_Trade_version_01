@@ -230,3 +230,11 @@ pattern_shorthands:
     BEAR_STAR: "Shooting Star / Bearish Baby Setup (find_anchor_shooting_star_baby)"
     BEAR_HAR: "Bearish Harami Setup (find_anchor_bearish_harami)"
   csv_export_alignment: "CSV exports match UI display table 1-to-1 in column order, numeric rounding (2 decimal places), formatted DD-MM-YY HH:MM timestamps, Yes/No CarryForward, and explicit pattern shorthands"
+
+sl_buffer_scaling:
+  description: "Dynamic asset & price-tiered Stop Loss buffer (calculate_sl_buffer) to prevent SL inflation on cheap option contracts"
+  tiers:
+    cheap_options: "Price < ₹50: max(0.15, Price * 2%)  (e.g., 0.15 - 0.20 pt buffer for ~₹7.50 options)"
+    mid_options: "₹50 <= Price < ₹200: max(0.50, Price * 1.5%)"
+    high_options_stock: "₹200 <= Price < ₹500: max(1.00, Price * 1.0%)"
+    index_spot: "Price >= ₹500: max(2.00, Price * 0.5%)"

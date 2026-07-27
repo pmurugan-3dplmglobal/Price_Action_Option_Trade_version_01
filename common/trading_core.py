@@ -435,13 +435,19 @@ def calculate_position_size(spot_price, stop_loss, capital=100000.0, risk_percen
 
 def calculate_sl_buffer(price_level, side="BULL"):
     """
-    Asset-adaptive Stop Loss buffer matching Page 13 (H2 + 2) and Page 29 (L2 - 2):
-    - For Options (price < 500): minimum 2.0 points buffer (or 1.5%).
-    - For Spot Stocks / Index (price >= 500): minimum 2.0 points buffer (or 0.5%).
+    Asset-adaptive & price-tiered Stop Loss buffer:
+    - For Cheap Options (price < 50): max(0.15, price * 0.02)  (e.g., 0.15 - 0.20 pt buffer for ~7.50 options)
+    - For Mid Options (50 <= price < 200): max(0.50, price * 0.015)
+    - For High Options / Stock Spot (200 <= price < 500): max(1.00, price * 0.01)
+    - For Index Spot (price >= 500): max(2.00, price * 0.005)
     """
     price = float(price_level)
-    if price < 500:
-        buffer = max(2.00, price * 0.015)
+    if price < 50:
+        buffer = max(0.15, price * 0.02)
+    elif price < 200:
+        buffer = max(0.50, price * 0.015)
+    elif price < 500:
+        buffer = max(1.00, price * 0.01)
     else:
         buffer = max(2.00, price * 0.005)
 
@@ -609,7 +615,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
                 break
 
         benchmark = float(a['high'])
-        invalidation = anchor_match["SL"] if anchor_match else round(float(a['low']) - max(0.50, float(a['low']) * 0.02), 2)
+        invalidation = anchor_match["SL"] if anchor_match else calculate_sl_buffer(a['low'], side="BULL")
         anchor_name = anchor_match["Pattern"] if anchor_match else "BULL_A_Base"
 
         # Left-Side Rule: no close below A.low in preceding 100 candles
