@@ -44,7 +44,8 @@ LIVE_EXECUTION_FLAG = "input/nifty50_live.flag"
 LIVE_EXECUTION_FLAG_INDEX = "input/index_live.flag"
 
 DASHBOARD_PORT = 5051
-REFRESH_SECONDS = 5
+REFRESH_SECONDS = 1
+ACTIVE_EDIT_LOCKS = set()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -454,6 +455,7 @@ def refresh_data():
                         # Fail-Safe Active Position Risk Monitor
                         try:
                             scan_sl = lookup_scan_sl_target(sym, sym, "daily", _kite_session, entry_pr, is_stock=True)
+                            
                             pos_item = {
                                 "contract": sym,
                                 "symbol": sym,
@@ -477,7 +479,13 @@ def refresh_data():
                                 ltp_val = live_ltp
                                 sl_val = float(scan_sl.get("current_sl", 0))
                                 t3_val = float(scan_sl.get("t3", 0))
-                                if ltp_val > 0 and sl_val > 0 and ltp_val <= sl_val:
+
+                                clean_sym = str(sym).replace(" ", "").upper()
+                                # TASK 1: Pause automated exit execution if user is actively editing this symbol on the UI
+                                if clean_sym in ACTIVE_EDIT_LOCKS:
+                                    logging.info(f"[FAILSAFE PAUSED] {sym} is currently being edited on UI. Automated exit execution paused.")
+                                # TASK 2: Only execute exit if SL > 0 (valid SL assigned via auto-fill or manual fill)
+                                elif ltp_val > 0 and sl_val > 0 and ltp_val <= sl_val:
                                     logging.warning(f"[FAILSAFE MONITOR EXIT SL] {sym} LTP={ltp_val} <= SL={sl_val}")
                                     pos_obj = {"contract": sym, "position_size": qty, "quantity": qty, "symbol": sym}
                                     shared_close_stock_position(_kite_session, pos_obj, True, p.get("product"))
@@ -825,13 +833,16 @@ HTML_TEMPLATE = """
         }
         function editRow(uid, symbol, sl, t1, t2, t3) {
             const clean = v => (v === '---' || v === '' || v === undefined || v === null) ? '' : v;
-            editStates[uid] = {active: true, sl: clean(sl), t1: clean(t1), t2: clean(t2), t3: clean(t3)};
+            editStates[uid] = {active: true, symbol: symbol, sl: clean(sl), t1: clean(t1), t2: clean(t2), t3: clean(t3)};
             window._isEditing = true;
+            fetch('/api/edit-lock', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({symbol: symbol, active: true})});
             renderScanTab(true); renderReport(true);
         }
         function cancelEdit(uid) {
+            const sym = editStates[uid]?.symbol;
             delete editStates[uid];
             if (Object.keys(editStates).length === 0) window._isEditing = false;
+            fetch('/api/edit-lock', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({symbol: sym, active: false})});
             renderScanTab(true); renderReport(true);
         }
         async function saveEdit(uid, symbol, engine) {
@@ -2014,6 +2025,21 @@ def api_live_execution_index():
 
 SL_TARGET_OVERRIDES_FILE = os.path.join(BASE_DIR, "output", "monitor", "sl_target_overrides.json")
 
+@app.route("/api/edit-lock", methods=["POST"])
+def api_edit_lock():
+    data = request.json or {}
+    sym = data.get("symbol")
+    active = data.get("active", False)
+    if sym:
+        clean_s = str(sym).replace(" ", "").upper()
+        if active:
+            ACTIVE_EDIT_LOCKS.add(clean_s)
+            logging.info(f"[EDIT LOCK ON] Automated exit execution paused for {clean_s}")
+        else:
+            ACTIVE_EDIT_LOCKS.discard(clean_s)
+            logging.info(f"[EDIT LOCK OFF] Automated exit execution resumed for {clean_s}")
+    return jsonify({"ok": True})
+
 @app.route("/api/update-position", methods=["POST"])
 def api_update_position():
     data = request.get_json(force=True, silent=True) or {}
@@ -2042,6 +2068,7 @@ def api_update_position():
     with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
         json.dump(overrides, f, indent=2)
     clear_executed_exit(symbol)
+    ACTIVE_EDIT_LOCKS.discard(str(symbol).replace(" ", "").upper())
     matched = False
     with data_lock:
         update_keys = list(vals.keys())
