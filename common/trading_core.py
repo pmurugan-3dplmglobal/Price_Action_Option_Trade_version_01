@@ -1725,10 +1725,22 @@ def resolve_option_strikes(nfo_instruments, base_symbol, spot_price, step_size, 
                 (nfo_instruments['instrument_type'] == option_type.upper()) &
                 (nfo_instruments['strike'] == float(strike))
             ].copy()
-            if df.empty:
-                continue
-            df = df.sort_values(by='expiry')
-            c = df.iloc[0]
+            df['expiry_dt'] = pd.to_datetime(df['expiry']).dt.date
+            today = dt.now().date()
+            future = df[df['expiry_dt'] >= today].sort_values(by='expiry_dt')
+            if not future.empty:
+                expiries = future['expiry_dt'].unique()
+                curr_exp = expiries[0]
+                days_rem = (curr_exp - today).days
+                is_stock_contract = base_symbol.strip().upper() not in ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"]
+                if is_stock_contract and days_rem <= 4 and len(expiries) > 1:
+                    target_exp = expiries[1]
+                    sub = future[future['expiry_dt'] == target_exp]
+                    c = sub.iloc[0] if not sub.empty else future.iloc[0]
+                else:
+                    c = future.iloc[0]
+            else:
+                c = df.iloc[0]
             out.append({"strike": strike, "token": int(c['instrument_token']), "tradingsymbol": c['tradingsymbol']})
         except Exception as e:
             logging.error(f"Strike resolution error for {base_symbol} {option_type} @ {strike}: {e}")
