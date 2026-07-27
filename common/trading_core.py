@@ -22,23 +22,41 @@ LOOKBACK_LIMITS = {
     "5minute": 100,
     "10minute": 100,
     "15minute": 200,
+    "15min": 200,
     "30minute": 200,
+    "30min": 200,
     "60minute": 400,
-    "day": 2000
+    "1hr": 400,
+    "1h": 400,
+    "3hr": 400,
+    "3h": 400,
+    "180min": 400,
+    "4hr": 400,
+    "4h": 400,
+    "240min": 400,
+    "day": 2000,
+    "d": 2000,
+    "1d": 2000,
+    "week": 2000,
+    "w": 2000,
+    "1w": 2000
 }
 
 def get_next_candle_start_time(candle_date, timeframe_str):
     try:
         dt_val = pd.to_datetime(candle_date)
         tf_s = str(timeframe_str).lower()
-        if "60min" in tf_s or tf_s == "60minute" or "1hour" in tf_s: tf_minutes = 60
+        if "week" in tf_s or tf_s in ["w", "1w"]: tf_minutes = 10080
+        elif "4h" in tf_s or "240min" in tf_s: tf_minutes = 240
+        elif "3h" in tf_s or "180min" in tf_s: tf_minutes = 180
+        elif "60min" in tf_s or tf_s == "60minute" or "1hour" in tf_s or "1hr" in tf_s or "1h" in tf_s: tf_minutes = 60
         elif "30min" in tf_s or tf_s == "30minute": tf_minutes = 30
         elif "15min" in tf_s or tf_s == "15minute": tf_minutes = 15
         elif "10min" in tf_s or tf_s == "10minute": tf_minutes = 10
         elif "5min" in tf_s or tf_s == "5minute": tf_minutes = 5
         elif "3min" in tf_s or tf_s == "3minute": tf_minutes = 3
-        elif "day" in tf_s: tf_minutes = 1440
-        else: tf_minutes = 15
+        elif "day" in tf_s or tf_s in ["d", "1d"]: tf_minutes = 1440
+        else: tf_minutes = 1440
         next_dt = dt_val + pd.Timedelta(minutes=tf_minutes)
         return str(next_dt)
     except Exception:
@@ -60,23 +78,29 @@ def get_adaptive_lookback(timeframe_str, asset_class="STOCK_SPOT", user_lookback
         return int(user_lookback)
 
     tf_s = str(timeframe_str).lower()
-    if "day" in tf_s or tf_s == "1d":
+    if "week" in tf_s or tf_s in ["w", "1w"] or "day" in tf_s or tf_s in ["d", "1d"]:
         return 2000
-    elif "4h" in tf_s or "240min" in tf_s or "60min" in tf_s or "1hour" in tf_s:
+    elif "4h" in tf_s or "3h" in tf_s or "180min" in tf_s or "240min" in tf_s or "60min" in tf_s or "1hour" in tf_s or "1hr" in tf_s or "1h" in tf_s:
         return 365
     else:
         return 60
 
 def resample_timeframe(df, timeframe_str):
     """
-    Resample dataframe candles for custom non-native timeframes (e.g. 4h / 240min).
+    Resample dataframe candles for custom non-native timeframes (e.g. 3h, 4h, week).
     Native Kite TFs (3m, 5m, 10m, 15m, 30m, 60m, day) are returned as is.
     """
     if df is None or df.empty:
         return df
 
     tf_s = str(timeframe_str).lower()
-    if tf_s not in ["4h", "4hour", "240min", "240minute"]:
+    if tf_s in ["3hr", "3h", "180min", "180minute"]:
+        rule = '180min'
+    elif tf_s in ["4hr", "4h", "4hour", "240min", "240minute"]:
+        rule = '240min'
+    elif tf_s in ["week", "weekly", "w", "1w"]:
+        rule = 'W-FRI'
+    else:
         return df
 
     try:
@@ -91,7 +115,7 @@ def resample_timeframe(df, timeframe_str):
 
         hist[time_col] = pd.to_datetime(hist[time_col])
         hist = hist.set_index(time_col)
-        resampled = hist.resample('240min').agg({
+        resampled = hist.resample(rule).agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -603,6 +627,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
             "t1": t1, "t2": t2, "t3": t3
         })
 
+    valid_matches = []
     # ── Phase 2: For each anchor, scan forward B -> C -> D ──
     for cand in anchors:
         a_idx = cand["idx"]
@@ -610,6 +635,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         benchmark = cand["benchmark"]
         invalidation = cand["invalidation"]
         anchor_name = cand["anchor_name"]
+        a_low = cand["a_low"]
 
         remaining = df_entry.iloc[a_idx + 1:]
         if len(remaining) < 3:
@@ -624,7 +650,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         if b_idx is None:
             continue
 
-        # Point C: FIRST candle AFTER B with red retest (dips to/close to benchmark, above SL)
+        # Point C: FIRST candle AFTER B with red retest (dips to/close to benchmark, stays above SL)
         c_slice = df_entry.iloc[b_idx + 1:]
         c_idx = None
         for j in range(len(c_slice)):
@@ -653,7 +679,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
 
         d = df_entry.iloc[d_idx]
 
-        # Invalidation: no candle between A-D closes below SL
+        # Invalidation between A and D: no candle closes below SL (A.low - buffer)
         between = df_entry.iloc[a_idx + 1 : d_idx]
         if not between.empty and float(between['close'].min()) < invalidation:
             continue
@@ -664,6 +690,25 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         if t1 is None or close_price >= t1:
             continue
 
+        stage_status = "FRESH_ENTRY"
+        priority_level = "HIGH_PRIORITY"
+
+        # Post-D 3-Tier Classification Filter
+        after_d = df_entry.iloc[d_idx + 1 :]
+        if not after_d.empty:
+            # 1. Discard if SL hit after D (A.low - buffer)
+            if float(after_d['close'].min()) <= invalidation:
+                continue
+            # 2. Check if T1 has been reached after D
+            if float(after_d['close'].max()) >= t1:
+                # If T3 reached or T2 reached or no T2/T3 available -> All targets completed
+                if (t3 is not None and float(after_d['close'].max()) >= t3) or t2 is None or float(after_d['close'].max()) >= t2:
+                    continue
+                # T1 was hit, but T2/T3 is still pending -> Qualifies as LOW PRIORITY T2 Continuation
+                stage_status = "T2_CONTINUATION"
+                priority_level = "LOW_PRIORITY"
+                sl_val = t1  # Trailed SL to T1 level to protect banked gains
+
         risk = close_price - sl_val
         if risk <= 0 or risk < close_price * 0.002 or ((t1 - close_price) / risk) < 1.88:
             continue
@@ -672,16 +717,18 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         short_names = {
             "BULL_A_ABCD_Engulf": "BE_ABCD",
             "BULL_A_LL_Sweep": "LL_ABCD",
+            "BULL_A_LL_Sweep_Var1": "LL_ABCD",
+            "BULL_A_LL_Sweep_Var2": "LL_ABCD",
             "BULL_A_Baby_Candle": "HAMMER_ABCD",
             "BULL_A_Harami": "HARAMI_ABCD",
             "BULL_A_Two_Higher_Highs": "HH_ABCD",
             "BULL_A_Base": "BASE_ABCD"
         }
-        pattern_label = short_names.get(anchor_name, "BE_ABCD")
+        pattern_label = short_names.get(anchor_name, "BASE_ABCD")
         d_time_str = str(d.get("date", ""))
         a_time_str = str(a.get("date", ""))
 
-        return {
+        valid_matches.append({
             "Pattern": pattern_label,
             "SL": sl_val,
             "T1": t1,
@@ -690,8 +737,20 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
             "Close": close_price,
             "RR": round(rr, 2),
             "CandleTime": d_time_str,
-            "CandleATime": a_time_str
-        }
+            "CandleATime": a_time_str,
+            "Stage_Status": stage_status,
+            "Priority": priority_level,
+            "d_idx": d_idx
+        })
+
+    if not valid_matches:
+        return None
+
+    # Prefer LATEST formed pattern (highest d_idx), then HIGH_PRIORITY over LOW_PRIORITY, then R:R
+    valid_matches.sort(key=lambda x: (x["d_idx"], x["Priority"] == "HIGH_PRIORITY", x["RR"]), reverse=True)
+    best_latest = valid_matches[0]
+    best_latest.pop("d_idx", None)
+    return best_latest
 
     return None
 
@@ -802,8 +861,8 @@ def get_option_lot_size(contract):
         logging.warning(f"Lot size lookup failed for {contract}: {e}")
     return None
 
-def close_stock_position(kite, pos, live_market, product=None):
-    if not live_market:
+def close_stock_position(kite, pos, live_market=True, product=None):
+    if not kite:
         logging.info(f"[BACKTEST EXIT] Closed stock {pos.get('contract','')}")
         return
     contract = pos.get("contract") or pos.get("symbol")
@@ -851,8 +910,8 @@ def close_stock_position(kite, pos, live_market, product=None):
     except Exception as e:
         logging.error(f"Stock exit failed for {contract}: {e}")
 
-def close_position(kite, pos, live_market, product=None):
-    if not live_market:
+def close_position(kite, pos, live_market=True, product=None):
+    if not kite:
         logging.info(f"[BACKTEST EXIT] Closed {pos.get('contract','')}")
         return
     contract = pos.get("contract") or pos.get("symbol")
@@ -877,12 +936,9 @@ def close_position(kite, pos, live_market, product=None):
         q = kite.quote(f"{kite.EXCHANGE_NFO}:{contract}")
         ltp = q[f"{kite.EXCHANGE_NFO}:{contract}"]["last_price"]
         bid = q[f"{kite.EXCHANGE_NFO}:{contract}"]["depth"]["buy"][0]["price"]
-        price = round((bid if bid > 0 else ltp) * 0.995, 1)
-        position_size = pos.get("position_size", 1)
-        lot_size = get_option_lot_size(contract)
-        if not lot_size:
-            lot_size = pos.get("lot_size", 1)
-        qty = lot_size * position_size
+        raw_price = (bid if bid > 0 else ltp) * 0.995
+        price = round(round(raw_price / 0.05) * 0.05, 2)
+        qty = pos.get("quantity") or (get_option_lot_size(contract) or pos.get("lot_size", 1)) * pos.get("position_size", 1)
         try:
             kite.place_order(
                 variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
@@ -890,17 +946,19 @@ def close_position(kite, pos, live_market, product=None):
                 quantity=qty, order_type=kite.ORDER_TYPE_LIMIT,
                 price=price, product=target_product
             )
-            logging.info(f"Closed {contract} with product {target_product}")
+            logging.info(f"Closed {contract} with LIMIT order price {price} (product {target_product})")
         except Exception as primary_err:
-            logging.warning(f"Primary exit with {target_product} failed for {contract}: {primary_err}. Retrying with alternative product...")
-            alt_product = kite.PRODUCT_MIS if target_product == kite.PRODUCT_NRML else kite.PRODUCT_NRML
-            kite.place_order(
-                variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
-                exchange=kite.EXCHANGE_NFO, transaction_type=kite.TRANSACTION_TYPE_SELL,
-                quantity=qty, order_type=kite.ORDER_TYPE_LIMIT,
-                price=price, product=alt_product
-            )
-            logging.info(f"Fallback exit SUCCESS for {contract} with product {alt_product}")
+            logging.warning(f"Primary LIMIT exit with {target_product} failed for {contract}: {primary_err}. Retrying with MARKET order...")
+            try:
+                kite.place_order(
+                    variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
+                    exchange=kite.EXCHANGE_NFO, transaction_type=kite.TRANSACTION_TYPE_SELL,
+                    quantity=qty, order_type=kite.ORDER_TYPE_MARKET,
+                    product=target_product
+                )
+                logging.info(f"Fallback MARKET exit SUCCESS for {contract} with product {target_product}")
+            except Exception as m_err:
+                logging.error(f"Fallback MARKET exit failed for {contract}: {m_err}")
     except Exception as e:
         logging.error(f"Exit failed for {contract}: {e}")
 
@@ -908,12 +966,19 @@ def load_program_config_for_engine(cfg_section, extra_fields=None):
     """Load engine config from program_config.json. Returns dict of applied overrides."""
     applied = {}
     try:
-        cfg_path = os.path.join(os.path.dirname(__file__), "input", "program_config.json")
-        if os.path.exists(cfg_path):
-            with open(cfg_path) as f:
+        possible_paths = [
+            os.path.join(os.getcwd(), "input", "program_config.json"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "input", "program_config.json"),
+            os.path.join(os.path.dirname(__file__), "input", "program_config.json")
+        ]
+        cfg_path = next((p for p in possible_paths if os.path.exists(p)), None)
+        if cfg_path:
+            with open(cfg_path, encoding="utf-8") as f:
                 full = json.load(f)
             if "_backtest" in full:
-                applied["LIVE_MARKET_DEPLOYMENT"] = not full["_backtest"]
+                applied["LIVE_MARKET_DEPLOYMENT"] = not bool(full["_backtest"])
+            else:
+                applied["LIVE_MARKET_DEPLOYMENT"] = True
             cfg = full.get(cfg_section, {})
             for src_key, dst_key in [
                 ("timeframe_entry", "TIMEFRAME_ENTRY"),
@@ -931,8 +996,11 @@ def load_program_config_for_engine(cfg_section, extra_fields=None):
                         applied[dst_key] = cfg[src_key]
                     elif src_key in full:
                         applied[dst_key] = full[src_key]
+        else:
+            applied["LIVE_MARKET_DEPLOYMENT"] = True
     except Exception as e:
         logging.warning(f"Config load ({cfg_section}): {e}")
+        applied["LIVE_MARKET_DEPLOYMENT"] = True
     return applied
 
 def sync_kite_positions(kite, registry, positions_dict, lock, engine, timeframe_entry, timeframe_anchor):
@@ -1489,6 +1557,22 @@ def monitor_active_positions(kite, registry, positions_dict, lock, product_type,
                 hp = float(last['high'])
                 tid = pos.get("trade_id")
                 is_stock = pos.get("position_type") == "stock"
+
+                # Check live quote LTP & high for instant tick-level execution
+                try:
+                    contract_name = pos.get("contract") or pos.get("symbol") or sym
+                    exch = "NSE" if is_stock else "NFO"
+                    q_key = f"{exch}:{contract_name}"
+                    q_res = kite.quote([q_key])
+                    if q_key in q_res:
+                        q_info = q_res[q_key]
+                        live_ltp = float(q_info.get("last_price", 0))
+                        live_h = float(q_info.get("ohlc", {}).get("high", 0))
+                        if live_ltp > 0:
+                            cp = live_ltp
+                            hp = max(hp, live_h, live_ltp)
+                except Exception as q_err:
+                    logging.debug(f"Live quote fetch error for {sym}: {q_err}")
                 sl_hit = cp <= pos.get("current_sl", 0)
                 if sl_hit:
                     logging.warning(f"SL: {sym} at {cp}")
@@ -2008,7 +2092,7 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
             continue
 
         intermediate_bars = df_entry.iloc[e_anchor_idx:d_idx + 1]
-        if float(intermediate_bars['close'].max()) > a_high:
+        if float(intermediate_bars['close'].max()) > sl_val:
             continue
 
         pattern_type = det_result["Pattern"] if det_result else "BEAR_A_BCD_Breakout"
@@ -2019,6 +2103,25 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
         t1, t2, t3 = find_profit_targets_bearish(df_entry, entry_close, stop_loss=sl_val)
         if not t1 or t1 >= entry_close:
             t1 = round(entry_close - max(1.5 * abs(sl_val - entry_close), entry_close * 0.05), 2)
+
+        stage_status = "FRESH_ENTRY"
+        priority_level = "HIGH_PRIORITY"
+
+        # Post-D 3-Tier Classification Filter
+        after_d = df_entry.iloc[d_idx + 1 :]
+        if not after_d.empty:
+            # 1. Discard if SL hit after D (A.high + buffer)
+            if float(after_d['close'].max()) >= sl_val:
+                continue
+            # 2. Check if T1 has been reached after D
+            if t1 is not None and float(after_d['close'].min()) <= t1:
+                # If T3 reached or T2 reached or no T2/T3 available -> All targets completed
+                if (t3 is not None and float(after_d['close'].min()) <= t3) or t2 is None or float(after_d['close'].min()) <= t2:
+                    continue
+                # T1 was hit, but T2/T3 is still pending -> Qualifies as LOW PRIORITY T2 Continuation
+                stage_status = "T2_CONTINUATION"
+                priority_level = "LOW_PRIORITY"
+                sl_val = t1  # Trailed SL to T1 level to protect banked gains
 
         risk = sl_val - entry_close
         if risk <= 0:
@@ -2037,12 +2140,18 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
             "T3": t3,
             "RR": round(rr, 2),
             "A_Date": str(a_date),
-            "D_Date": str(entry_candle.get('date', ''))
+            "D_Date": str(entry_candle.get('date', '')),
+            "Stage_Status": stage_status,
+            "Priority": priority_level,
+            "d_idx": d_idx
         }
 
-        if best_match is None or setup_data["RR"] > best_match["RR"]:
+        if best_match is None or setup_data["d_idx"] > best_match.get("d_idx", -1) or \
+           (setup_data["d_idx"] == best_match.get("d_idx", -1) and setup_data["Priority"] == "HIGH_PRIORITY" and setup_data["RR"] > best_match.get("RR", 0)):
             best_match = setup_data
 
+    if best_match:
+        best_match.pop("d_idx", None)
     return best_match
 
 

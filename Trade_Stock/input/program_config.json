@@ -2,9 +2,11 @@
   "api_key": "o8nnw6kxykvrsrhg",
   "api_secret": "9g7d5kktr38d7yvq11njsm4upz8kc6s1",
   "daily": {
+    "timeframe": "day",
     "lookback_days": 2000
   },
   "bear_trade": {
+    "timeframe": "day",
     "lookback_days": 2000
   },
   "_backtest": false,

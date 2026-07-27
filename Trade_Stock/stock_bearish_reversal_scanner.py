@@ -66,8 +66,24 @@ def run_scan(kite):
     results = []
     results_lock = threading.Lock()
     scan_order = sorted(STOCK_REGISTRY.keys())
-    logging.info(f"[BEAR] Scanning {len(scan_order)} stocks for Bear Reversal setups (TF: {TIMEFRAME_ENTRY}, Lookback: {effective_lookback}d)...")
-    fetch_tf = "60minute" if TIMEFRAME_ENTRY in ["4h", "4hour", "240min", "240minute"] else TIMEFRAME_ENTRY
+    tf_clean = str(TIMEFRAME_ENTRY).lower()
+    if tf_clean in ["week", "weekly", "w", "1w", "day", "d", "1d"]:
+        fetch_tf = "day"
+    elif tf_clean in ["3hr", "3h", "180min", "180minute", "4h", "4hour", "240min", "240minute", "1hr", "1h", "60min", "60minute"]:
+        fetch_tf = "60minute"
+    elif tf_clean in ["30min", "30minute"]:
+        fetch_tf = "30minute"
+    elif tf_clean in ["15min", "15minute"]:
+        fetch_tf = "15minute"
+    elif tf_clean in ["10min", "10minute"]:
+        fetch_tf = "10minute"
+    elif tf_clean in ["5min", "5minute"]:
+        fetch_tf = "5minute"
+    elif tf_clean in ["3min", "3minute"]:
+        fetch_tf = "3minute"
+    else:
+        fetch_tf = "day"
+
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {}
         for symbol in scan_order:

@@ -6,6 +6,11 @@ from datetime import datetime as dt
 from flask import Flask, render_template_string, jsonify, request, Response
 from kiteconnect import KiteConnect
 import trade_db
+from trading_core import (
+    lookup_scan_sl_target,
+    close_position as shared_close_position,
+    close_stock_position as shared_close_stock_position
+)
 
 app = Flask(__name__)
 
@@ -43,44 +48,34 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PROGRAMS = {
     "index": {
-        "name": "Index Trade Engine (Nifty & BankNifty)",
-        "file": "bull_index_trade_engine.py",
-        "desc": "Real-time index options intraday trading (3min)",
+        "name": "Index Options Trade Engine",
+        "file": "index_options_trade_engine.py",
+        "desc": "Real-time index options intraday trading (NIFTY, BANKNIFTY, SENSEX)",
         "color": "#58a6ff",
         "log_file": INDEX_LOG_FILE,
         "config_fields": {
-            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["minute","3minute","5minute","10minute","15minute","30minute","60minute"], "default": "3minute"},
-            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["15minute","30minute","60minute","day"], "default": "15minute"},
+            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "3minute"},
+            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "15minute"},
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
             "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 15},
             "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
             "capital": {"label": "Capital", "type": "number", "default": 100000.0},
-            "strike_range": {"label": "Strike Range (±)", "type": "number", "default": 3}
+            "strike_range": {"label": "Strike Range (±)", "type": "number", "default": 0}
         }
     },
     "nifty50": {
-        "name": "Nifty 50 Stock Scanner + Executor",
-        "file": "bull_nifty50_scanner_executor.py",
-        "desc": "Scans Nifty 50 stocks, picks best setup, executes (15min)",
+        "name": "Stock Options Trade Engine",
+        "file": "stock_options_trade_engine.py",
+        "desc": "Scans Nifty 50 stock options, picks best setup & executes",
         "color": "#3fb950",
         "log_file": NIFTY50_LOG_FILE,
         "config_fields": {
-            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["5minute","10minute","15minute","30minute","60minute"], "default": "15minute"},
-            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["15minute","30minute","60minute","day"], "default": "30minute"},
+            "timeframe_entry": {"label": "Entry Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "15minute"},
+            "timeframe_anchor": {"label": "Anchor Timeframe", "type": "select", "options": ["3minute","5minute","10minute","15minute","30minute","60minute","day"], "default": "30minute"},
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
             "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 300},
             "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
             "capital": {"label": "Capital", "type": "number", "default": 100000.0}
-        }
-    },
-    "daily": {
-        "name": "Nifty 50 Daily Scanner (Export)",
-        "file": "bull_nifty50_daily_scanner_export.py",
-        "desc": "Scans Nifty 50 on daily timeframe, exports to Excel",
-        "color": "#d29922",
-        "log_file": DAILY_LOG_FILE,
-        "config_fields": {
-            "lookback_days": {"label": "Lookback Days", "type": "number", "default": 120}
         }
     }
 }
@@ -94,8 +89,8 @@ cached_data = {
     "journal": [],
     "log_tail": {pid: [] for pid in PROGRAMS},
     "stats": {"total_trades": 0, "win_rate": 0, "active_positions": 0, "pnl": 0},
-    "scans": {"index": [], "nifty50": [], "daily": []},
-    "scan_summary": {"index": {"anchors": {}, "abc_matches": {}}, "nifty50": {"anchors": {}, "abc_matches": {}}, "daily": {"anchors": {}, "abc_matches": {}}},
+    "scans": {"index": [], "nifty50": []},
+    "scan_summary": {"index": {"anchors": {}, "abc_matches": {}}, "nifty50": {"anchors": {}, "abc_matches": {}}},
     "all_trades": [],
     "kite_positions": [],
     "ltp": {},
@@ -416,7 +411,7 @@ def refresh_data():
                                 cached_data["ltp"] = ltp
                 except Exception:
                     _kite_session = None
-        if now - _kite_positions_last_fetch > 60:
+        if now - _kite_positions_last_fetch > 5:
             _kite_positions_last_fetch = now
             try:
                 if not _kite_session:
@@ -437,14 +432,65 @@ def refresh_data():
                         qty = abs(int(p.get("quantity", 0)))
                         if qty == 0:
                             continue
+                        entry_pr = float(p.get("average_price", 0))
+                        exch = p.get("exchange", "NFO")
+                        q_key = f"{exch}:{sym}"
+                        live_ltp = 0
+                        try:
+                            q_data = _kite_session.quote([q_key]).get(q_key, {})
+                            live_ltp = float(q_data.get("last_price", 0))
+                        except Exception:
+                            pass
+                        live_pnl = round((live_ltp - entry_pr) * qty, 2) if live_ltp > 0 and entry_pr > 0 else float(p.get("pnl", 0))
+                        if live_ltp > 0:
+                            cached_data["ltp"][str(sym)] = live_ltp
+                            tok_id = p.get("instrument_token")
+                            if tok_id:
+                                cached_data["ltp"][str(tok_id)] = live_ltp
+
                         merged.append({
                             "contract": sym,
                             "quantity": qty,
-                            "entry_price": float(p.get("average_price", 0)),
-                            "pnl": float(p.get("pnl", 0)),
-                            "exchange": p.get("exchange", ""),
+                            "entry_price": entry_pr,
+                            "ltp": live_ltp,
+                            "pnl": live_pnl,
+                            "exchange": exch,
                             "source": "kite"
                         })
+                        # Fail-Safe Active Position Risk Monitor
+                        try:
+                            engine_type = "index" if ("NIFTY" in sym or "BANK" in sym or "SENSEX" in sym) else "nifty50"
+                            scan_sl = lookup_scan_sl_target(sym, sym, engine_type, _kite_session, entry_pr)
+                            if scan_sl:
+                                ltp_val = live_ltp
+                                sl_val = float(scan_sl.get("current_sl", 0))
+                                t1_val = float(scan_sl.get("t1", 0))
+                                t2_val = float(scan_sl.get("t2", 0))
+                                t3_val = float(scan_sl.get("t3", 0))
+                                t_stage = int(scan_sl.get("trailing_stage", 0))
+                                tid = scan_sl.get("id")
+
+                                # 1. Check SL Hit Exit
+                                if ltp_val > 0 and sl_val > 0 and ltp_val <= sl_val:
+                                    logging.warning(f"[FAILSAFE MONITOR EXIT SL] {sym} LTP={ltp_val} <= SL={sl_val}")
+                                    pos_obj = {"contract": sym, "position_size": qty, "quantity": qty}
+                                    shared_close_position(_kite_session, pos_obj, True, p.get("product"))
+                                # 2. Check T3 Target Hit Exit
+                                elif ltp_val > 0 and t3_val > 0 and ltp_val >= t3_val:
+                                    logging.info(f"[FAILSAFE MONITOR EXIT T3] {sym} LTP={ltp_val} >= T3={t3_val}")
+                                    pos_obj = {"contract": sym, "position_size": qty, "quantity": qty}
+                                    shared_close_position(_kite_session, pos_obj, True, p.get("product"))
+                                # 3. Trailing SL Stage 1 (T1 Hit -> Trail SL to Breakeven / Entry)
+                                elif t_stage == 0 and t1_val > 0 and ltp_val >= t1_val and entry_pr > 0:
+                                    logging.info(f"[FAILSAFE TRAIL 1] {sym} LTP={ltp_val} >= T1={t1_val} -> Trailing SL to Breakeven ({entry_pr})")
+                                    if tid: trade_db.update_trade(tid, {"current_sl": entry_pr, "trailing_stage": 1})
+                                # 4. Trailing SL Stage 2 (T2 Hit -> Trail SL to T1)
+                                elif t_stage == 1 and t2_val > 0 and ltp_val >= t2_val and t1_val > 0:
+                                    logging.info(f"[FAILSAFE TRAIL 2] {sym} LTP={ltp_val} >= T2={t2_val} -> Trailing SL to T1 ({t1_val})")
+                                    if tid: trade_db.update_trade(tid, {"current_sl": t1_val, "trailing_stage": 2})
+                        except Exception as fs_err:
+                            logging.debug(f"Failsafe monitor error for {sym}: {fs_err}")
+
                     cached_data["kite_positions"] = merged
             except Exception:
                 pass
@@ -851,30 +897,27 @@ HTML_TEMPLATE = """
             let seenContracts = new Set();
             kitePos.forEach(kp => {
                 seenContracts.add(kp.contract);
-                mergedPositions.push({
-                    symbol: kp.contract,
-                    engine: kp.exchange === 'NFO' ? 'Index' : 'Nifty 50',
-                    pattern: 'KITE_OPEN',
-                    entry_spot: kp.entry_price,
-                    quantity: kp.quantity,
-                    pnl: kp.pnl,
-                    status: 'ACTIVE',
-                    source: 'kite'
-                });
                 const dbMatch = allTrades.find(t => {
                     const tc = (t.contract || '').replace(/\\s+/g, '').toUpperCase();
                     const ts = (t.symbol || '').replace(/\\s+/g, '').toUpperCase();
                     const kc = (kp.contract || '').replace(/\\s+/g, '').toUpperCase();
                     return (tc && (tc === kc || kc.includes(tc) || tc.includes(kc))) || (ts && (ts === kc || kc.includes(ts)));
                 });
-                if (dbMatch) {
-                    const last = mergedPositions[mergedPositions.length - 1];
-                    last.current_sl = dbMatch.current_sl;
-                    last.t1 = dbMatch.t1;
-                    last.t2 = dbMatch.t2;
-                    last.t3 = dbMatch.t3;
-                    if (dbMatch.pattern) last.pattern = dbMatch.pattern;
-                }
+                mergedPositions.push({
+                    symbol: kp.contract,
+                    engine: kp.exchange === 'NFO' ? 'Index' : 'Nifty 50',
+                    pattern: dbMatch && dbMatch.pattern ? dbMatch.pattern : 'KITE_OPEN',
+                    entry_spot: kp.entry_price,
+                    quantity: kp.quantity,
+                    pnl: kp.pnl,
+                    current_sl: dbMatch ? dbMatch.current_sl : '',
+                    t1: dbMatch ? dbMatch.t1 : '',
+                    t2: dbMatch ? dbMatch.t2 : '',
+                    t3: dbMatch ? dbMatch.t3 : '',
+                    token: dbMatch ? (dbMatch.option_token || dbMatch.index_token || '') : (kp.token || ''),
+                    status: 'ACTIVE',
+                    source: 'kite'
+                });
             });
             allTrades.forEach(t => {
                 const contract = t.contract || t.symbol || '';
@@ -911,9 +954,19 @@ HTML_TEMPLATE = """
                     if (st === 'sl_hit') { badge = 'badge-loss'; stLabel = 'SL HIT'; }
                     else if (st === 'target_hit') { badge = 'badge-profit'; stLabel = 'TARGET'; }
                     else if (st === 'exited') { badge = 'badge-closed'; stLabel = 'EXITED'; }
-                    const pnl = t.pnl_percent !== undefined && t.pnl_percent !== null ? t.pnl_percent : (t.pnl || '');
-                    const pnlBadge = pnl !== '' ? (pnl >= 0 ? 'badge-profit' : 'badge-loss') : '';
-                    const ltpVal = t.token ? (ltpData[t.token] || '') : '';
+                    const tokenKey = t.token || t.symbol || t.contract;
+                    const ltpVal = tokenKey ? (ltpData[tokenKey] || ltpData[t.symbol] || ltpData[t.contract] || '') : '';
+                    let pnlStr = '';
+                    if (ltpVal && t.entry_spot && t.entry_spot > 0) {
+                        const rawPnl = (ltpVal - t.entry_spot) * (t.quantity || 1);
+                        const pctPnl = ((ltpVal - t.entry_spot) / t.entry_spot * 100).toFixed(2);
+                        pnlStr = `${rawPnl >= 0 ? '+' : ''}${rawPnl.toFixed(2)} (${pctPnl}%)`;
+                    } else if (t.pnl_percent !== undefined && t.pnl_percent !== null) {
+                        pnlStr = `${t.pnl_percent}%`;
+                    } else if (t.pnl !== undefined && t.pnl !== null) {
+                        pnlStr = `${t.pnl >= 0 ? '+' : ''}${t.pnl.toFixed(2)}`;
+                    }
+                    const pnlBadge = pnlStr ? (pnlStr.includes('-') ? 'badge-loss' : 'badge-profit') : '';
                     const qty = t.quantity || '';
                     const slVal = t.current_sl !== undefined && t.current_sl !== null ? t.current_sl : '';
                     const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '';
@@ -942,11 +995,11 @@ HTML_TEMPLATE = """
                             actCell = `<td></td>`;
                         }
                     }
-                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${ltpVal}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnl !== '' ? `<span class="badge ${pnlBadge}">${pnl}</span>` : '-'}</td>${actCell}</tr>`;
+                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${ltpVal || '-'}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnlStr !== '' ? `<span class="badge ${pnlBadge}">${pnlStr}</span>` : '-'}</td>${actCell}</tr>`;
                 });
                 posHtml += '</tbody></table>';
             } else {
-                posHtml = '<p class="empty-state">No positions match filter</p>';
+                posHtml = '<div class="empty-state">No positions found</div>';
             }
             document.getElementById('active-positions-body').innerHTML = posHtml;
 
@@ -1733,7 +1786,7 @@ def api_status():
             "positions": cached_data["positions"],
             "all_trades": cached_data["all_trades"],
             "kite_positions": cached_data["kite_positions"],
-            "ltp": cached_data["ltp"],
+            "ltp": {str(k): v for k, v in cached_data["ltp"].items()},
             "journal": cached_data["journal"],
             "stats": cached_data["stats"],
             "config": cfg,

@@ -6,6 +6,11 @@ from datetime import datetime as dt
 from flask import Flask, render_template_string, jsonify, request, Response
 from kiteconnect import KiteConnect
 import trade_db
+from trading_core import (
+    lookup_scan_sl_target,
+    close_position as shared_close_position,
+    close_stock_position as shared_close_stock_position
+)
 
 app = Flask(__name__)
 
@@ -44,22 +49,34 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PROGRAMS = {
     "daily": {
-        "name": "Nifty_Stock_BearReversal_Bull_trade",
-        "file": "bull_nifty50_daily_scanner_export.py",
-        "desc": "Scans Nifty 50 on daily timeframe for Bullish setups, exports to Excel",
+        "name": "Stock_Bullish_Reversal_Scanner",
+        "file": "stock_bullish_reversal_scanner.py",
+        "desc": "Scans Nifty 50 on selected timeframe (Default: Day) for Bullish setups, exports to Excel",
         "color": "#d29922",
         "log_file": DAILY_LOG_FILE,
         "config_fields": {
+            "timeframe": {
+                "label": "Timeframe",
+                "type": "select",
+                "options": ["day", "week", "4hr", "1hr", "30min", "15min"],
+                "default": "day"
+            },
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 120}
         }
     },
     "bear_trade": {
-        "name": "Nifty_Stock_BullReversal_Bear_trade",
-        "file": "Nifty_Stock_BullReversal_Bear_trade.py",
-        "desc": "Scans Nifty 50 on daily timeframe for Bearish setups & Negation targets, exports to Excel",
+        "name": "Stock_Bearish_Reversal_Scanner",
+        "file": "stock_bearish_reversal_scanner.py",
+        "desc": "Scans Nifty 50 on selected timeframe (Default: Day) for Bearish setups & Negation targets, exports to Excel",
         "color": "#f85149",
         "log_file": BEAR_LOG_FILE,
         "config_fields": {
+            "timeframe": {
+                "label": "Timeframe",
+                "type": "select",
+                "options": ["day", "week", "4hr", "1hr", "30min", "15min"],
+                "default": "day"
+            },
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 120}
         }
     }
@@ -396,7 +413,7 @@ def refresh_data():
                                 cached_data["ltp"] = ltp
                 except Exception:
                     _kite_session = None
-        if now - _kite_positions_last_fetch > 60:
+        if now - _kite_positions_last_fetch > 5:
             _kite_positions_last_fetch = now
             try:
                 if not _kite_session:
@@ -417,14 +434,49 @@ def refresh_data():
                         qty = abs(int(p.get("quantity", 0)))
                         if qty == 0:
                             continue
+                        entry_pr = float(p.get("average_price", 0))
+                        exch = p.get("exchange", "NSE")
+                        q_key = f"{exch}:{sym}"
+                        live_ltp = 0
+                        try:
+                            q_data = _kite_session.quote([q_key]).get(q_key, {})
+                            live_ltp = float(q_data.get("last_price", 0))
+                        except Exception:
+                            pass
+                        live_pnl = round((live_ltp - entry_pr) * qty, 2) if live_ltp > 0 and entry_pr > 0 else float(p.get("pnl", 0))
+                        if live_ltp > 0:
+                            cached_data["ltp"][str(sym)] = live_ltp
+                            tok_id = p.get("instrument_token")
+                            if tok_id:
+                                cached_data["ltp"][str(tok_id)] = live_ltp
+
                         merged.append({
                             "contract": sym,
                             "quantity": qty,
-                            "entry_price": float(p.get("average_price", 0)),
-                            "pnl": float(p.get("pnl", 0)),
-                            "exchange": p.get("exchange", ""),
+                            "entry_price": entry_pr,
+                            "ltp": live_ltp,
+                            "pnl": live_pnl,
+                            "exchange": exch,
                             "source": "kite"
                         })
+                        # Fail-Safe Active Position Risk Monitor
+                        try:
+                            scan_sl = lookup_scan_sl_target(sym, sym, "daily", _kite_session, entry_pr, is_stock=True)
+                            if scan_sl:
+                                ltp_val = live_ltp
+                                sl_val = float(scan_sl.get("current_sl", 0))
+                                t3_val = float(scan_sl.get("t3", 0))
+                                if ltp_val > 0 and sl_val > 0 and ltp_val <= sl_val:
+                                    logging.warning(f"[FAILSAFE MONITOR EXIT SL] {sym} LTP={ltp_val} <= SL={sl_val}")
+                                    pos_obj = {"contract": sym, "position_size": qty, "quantity": qty, "symbol": sym}
+                                    shared_close_stock_position(_kite_session, pos_obj, True, p.get("product"))
+                                elif ltp_val > 0 and t3_val > 0 and ltp_val >= t3_val:
+                                    logging.info(f"[FAILSAFE MONITOR EXIT T3] {sym} LTP={ltp_val} >= T3={t3_val}")
+                                    pos_obj = {"contract": sym, "position_size": qty, "quantity": qty, "symbol": sym}
+                                    shared_close_stock_position(_kite_session, pos_obj, True, p.get("product"))
+                        except Exception as fs_err:
+                            logging.debug(f"Failsafe monitor error for {sym}: {fs_err}")
+
                     cached_data["kite_positions"] = merged
             except Exception:
                 pass
@@ -1713,7 +1765,7 @@ def api_status():
             "positions": cached_data["positions"],
             "all_trades": cached_data["all_trades"],
             "kite_positions": cached_data["kite_positions"],
-            "ltp": cached_data["ltp"],
+            "ltp": {str(k): v for k, v in cached_data["ltp"].items()},
             "journal": cached_data["journal"],
             "stats": cached_data["stats"],
             "config": cfg,

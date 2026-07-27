@@ -4,9 +4,14 @@ Write-Host ""
 $procs = Get-CimInstance Win32_Process -Filter "Name='python.exe'"
 $targets = $procs | Where-Object {
     $_.CommandLine -match 'Price_Action_Strategy' -and (
+        $_.CommandLine -match 'index_options_trade_engine' -or
+        $_.CommandLine -match 'stock_options_trade_engine' -or
+        $_.CommandLine -match 'stock_bullish_reversal_scanner' -or
+        $_.CommandLine -match 'stock_bearish_reversal_scanner' -or
         $_.CommandLine -match 'bull_index_trade_engine' -or
         $_.CommandLine -match 'bull_nifty50_scanner_executor' -or
-        $_.CommandLine -match 'app\.py'
+        $_.CommandLine -match 'app_option_Trade' -or
+        $_.CommandLine -match 'app_Sock_Trade'
     )
 }
 
