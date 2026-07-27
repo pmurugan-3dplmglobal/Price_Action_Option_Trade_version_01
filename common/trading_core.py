@@ -746,8 +746,24 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
     if not valid_matches:
         return None
 
-    # Prefer LATEST formed pattern (highest d_idx), then HIGH_PRIORITY over LOW_PRIORITY, then R:R
-    valid_matches.sort(key=lambda x: (x["d_idx"], x["Priority"] == "HIGH_PRIORITY", x["RR"]), reverse=True)
+    PATTERN_PRIORITY_MAP = {
+        "Engulfing": 5,
+        "LL_Sweep": 5,
+        "Baby_Candle": 4,
+        "Harami": 4,
+        "Two_Higher_Highs": 3,
+        "Base": 1  # Trend continuation / re-entry base has lowest priority
+    }
+
+    def _pattern_rank(match_obj):
+        p_name = match_obj.get("Pattern", "")
+        for k, rank in PATTERN_PRIORITY_MAP.items():
+            if k in p_name:
+                return rank
+        return 2
+
+    # Prefer LATEST formed pattern (d_idx), then Primary Reversal over Continuation Base, then HIGH_PRIORITY, then R:R
+    valid_matches.sort(key=lambda x: (x["d_idx"], _pattern_rank(x), x["Priority"] == "HIGH_PRIORITY", x["RR"]), reverse=True)
     best_latest = valid_matches[0]
     best_latest.pop("d_idx", None)
     return best_latest
