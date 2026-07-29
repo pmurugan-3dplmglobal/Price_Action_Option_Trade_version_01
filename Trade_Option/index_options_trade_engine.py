@@ -18,6 +18,7 @@ import trade_db
 
 from trading_core import (
     load_kite_session,
+    ensure_kite_session,
     log_to_journal,
     is_market_hours,
     get_weekly_expiry,
@@ -75,11 +76,16 @@ SL_TARGET_OVERRIDES_FILE = os.path.join("output", "monitor", "sl_target_override
 journal_lock = threading.Lock()
 JOURNAL_FILE = "output/monitor/trade_journal.csv"
 
+class FlushFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("output/logs/bull_index_trade_engine.log", mode="a", encoding="utf-8"),
+        FlushFileHandler("output/logs/bull_index_trade_engine.log", mode="a", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
@@ -149,8 +155,6 @@ def run_scan_cycle(kite):
 
     target_date = BACKTEST_DATE
     if target_date is None:
-        if not is_market_hours() and LIVE_MARKET_DEPLOYMENT:
-            return []
         ref_now = dt.now()
     else:
         ref_now = target_date
@@ -192,8 +196,6 @@ def run_scan_cycle(kite):
 # ──────────────────────────────────────────────
 
 def run_anchor_scan(kite):
-    if not is_market_hours() and LIVE_MARKET_DEPLOYMENT:
-        return
     limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
     max_days = limits.get(TIMEFRAME_ANCHOR, 180)
     from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
@@ -305,7 +307,7 @@ def execute_highest_rr_trade(kite, staged):
     if trade_db.is_pattern_executed("index", key):
         logging.info(f"Best cycle trade {key} already executed; skipping")
         return
-    live_ok = LIVE_MARKET_DEPLOYMENT and live_execution_enabled(LIVE_EXECUTION_FLAG)
+    live_ok = LIVE_MARKET_DEPLOYMENT and live_execution_enabled(LIVE_EXECUTION_FLAG) and is_market_hours()
     if live_ok or BACKTEST_DATE is not None:
         pos = best.copy()
         pos["entry_time"] = dt.now().isoformat()
@@ -421,6 +423,7 @@ def main_scan_loop(kite):
     cycle = 0
     while True:
         try:
+            ensure_kite_session(kite)
             cycle += 1
             if cycle == 1 or cycle % 4 == 1:
                 with position_lock:

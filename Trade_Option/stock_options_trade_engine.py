@@ -18,6 +18,7 @@ import trade_db
 
 from trading_core import (
     load_kite_session,
+    ensure_kite_session,
     log_to_journal,
     is_market_hours,
     cap_lookback_days,
@@ -67,20 +68,28 @@ ACTIVE_POSITIONS = {}
 position_lock = threading.Lock()
 NFO_INSTRUMENTS = pd.DataFrame()
 instruments_lock = threading.Lock()
-ANCHOR_SCAN_REQUEST_FILE = os.path.join("output", "monitor", "anchor_scan_request.txt")
-ANCHOR_SCAN_STOP_FILE = os.path.join("output", "monitor", "anchor_scan_stop.txt")
-LIVE_EXECUTION_FLAG = os.path.join("input", "nifty50_live.flag")
-SCAN_DISPLAY_FILE = os.path.join("output", "monitor", "scan_display_data.json")
-SL_TARGET_OVERRIDES_FILE = os.path.join("output", "monitor", "sl_target_overrides.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ANCHOR_SCAN_REQUEST_FILE = os.path.join(BASE_DIR, "output", "monitor", "anchor_scan_request.txt")
+ANCHOR_SCAN_STOP_FILE = os.path.join(BASE_DIR, "output", "monitor", "anchor_scan_stop.txt")
+LIVE_EXECUTION_FLAG = os.path.join(BASE_DIR, "input", "nifty50_live.flag")
+SCAN_DISPLAY_FILE = os.path.join(BASE_DIR, "output", "monitor", "scan_display_data.json")
+SL_TARGET_OVERRIDES_FILE = os.path.join(BASE_DIR, "output", "monitor", "sl_target_overrides.json")
 
 journal_lock = threading.Lock()
-JOURNAL_FILE = "output/monitor/trade_journal.csv"
+JOURNAL_FILE = os.path.join(BASE_DIR, "output", "monitor", "trade_journal.csv")
+
+class FlushFileHandler(logging.FileHandler):
+    def emit(self, record):
+        super().emit(record)
+        self.flush()
+
+os.makedirs(os.path.dirname("output/logs/bull_nifty50_scanner.log"), exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("output/logs/bull_nifty50_scanner.log", mode="a", encoding="utf-8"),
+        FlushFileHandler("output/logs/bull_nifty50_scanner.log", mode="a", encoding="utf-8"),
         logging.StreamHandler()
     ]
 )
@@ -275,7 +284,7 @@ def run_scan_cycle(kite):
     scan_order = sorted(STOCK_REGISTRY.keys())
     temp_stored_trades = []
 
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=15) as pool:
         futures = {}
         for symbol in scan_order:
             config = STOCK_REGISTRY[symbol]
@@ -334,7 +343,7 @@ def execute_highest_rr_trade(kite, staged):
         logging.error(f"Could not resolve option for {sym}")
         return
     option_token = _resolve_option_token(contract)
-    live_ok = LIVE_MARKET_DEPLOYMENT and live_execution_enabled(LIVE_EXECUTION_FLAG)
+    live_ok = LIVE_MARKET_DEPLOYMENT and live_execution_enabled(LIVE_EXECUTION_FLAG) and is_market_hours()
     if live_ok:
         with position_lock:
             if sym in ACTIVE_POSITIONS:
@@ -446,16 +455,20 @@ def run_anchor_scan(kite):
                     continue
                 if df.empty:
                     continue
-            for name, scanner_func in scanners:
-                result = scanner_func(df)
-                if result:
-                    logging.info(f"ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
-                    log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
-                                   "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
-                                    entry=result["Close"], sl=result["SL"], target="")
-                    break
+                for name, scanner_func in scanners:
+                    result = scanner_func(df)
+                    if result:
+                        logging.info(f"ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
+                        log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
+                                       "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
+                                        entry=result["Close"], sl=result["SL"], target="")
+                        break
         time.sleep(1)
     logging.info("Anchor scan complete")
+    try:
+        run_scan_cycle(kite)
+    except Exception as e:
+        logging.error(f"Error executing scan cycle post anchor scan: {e}")
 
 # ──────────────────────────────────────────────
 #  POSITION MONITORING — SL, TRAILING, TARGETS
@@ -471,6 +484,7 @@ def position_monitor_loop(kite):
     """Background thread that checks stop-loss, trailing, and targets every 60s."""
     while True:
         try:
+            ensure_kite_session(kite)
             monitor_active_positions(kite)
         except Exception as e:
             logging.error(f"Position monitor error: {e}")
@@ -482,8 +496,8 @@ def position_monitor_loop(kite):
 
 
 
-def write_scan_display_data(staged, active):
-    return shared_write_display(staged, active, SCAN_DISPLAY_FILE)
+def write_scan_display_data(staged, active, display_file=SCAN_DISPLAY_FILE, engine_name="nifty50"):
+    return shared_write_display(staged, active, display_file, engine_name)
 
 def _sync_kite_positions(kite):
     return shared_sync_kite(kite, STOCK_REGISTRY, ACTIVE_POSITIONS, position_lock, "nifty50", TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)
@@ -496,9 +510,7 @@ def main_scan_loop(kite):
     _sync_counter = 0
     while True:
         try:
-            if live_execution_enabled(LIVE_EXECUTION_FLAG) and not is_market_hours():
-                time.sleep(600)
-                continue
+            ensure_kite_session(kite)
             _sync_counter += 1
             if _sync_counter % 5 == 0 and not BACKTEST_DATE:
                 shared_sync_kite(kite, STOCK_REGISTRY, ACTIVE_POSITIONS, position_lock, "nifty50", TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)
@@ -558,7 +570,7 @@ def main_scan_loop(kite):
                 logging.info("[CYCLE] No trades staged this cycle.")
             trade_db.clear_cycle_trades("nifty50")
             with position_lock:
-                shared_write_display(staged or [], dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE)
+                shared_write_display(staged or [], dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
             elapsed = time.time() - start
             sleep = max(0, SCAN_INTERVAL_SECONDS - elapsed)
             logging.info(f"[BEAT] Cycle done in {elapsed:.2f}s. Sleep {sleep:.0f}s")
@@ -803,7 +815,7 @@ def main():
         else:
             with position_lock:
                 ACTIVE_POSITIONS.clear()
-                write_scan_display_data([], dict(ACTIVE_POSITIONS))
+                write_scan_display_data([], dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
             logging.info("[BACKTEST] No trades staged for this date.")
         trade_db.clear_cycle_trades("nifty50")
         return

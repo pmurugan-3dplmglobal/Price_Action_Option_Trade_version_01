@@ -2,7 +2,7 @@ import os, json, csv, time, threading, subprocess, sys, signal, logging
 COMMON_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "common"))
 if COMMON_DIR not in sys.path:
     sys.path.insert(0, COMMON_DIR)
-from datetime import datetime as dt
+from datetime import datetime as dt, time as datetime_time
 from flask import Flask, render_template_string, jsonify, request, Response
 from kiteconnect import KiteConnect
 import trade_db
@@ -32,21 +32,21 @@ def get_kite_credentials():
 
 TOKEN_FILE = "input/kite_access_token.txt"
 CONFIG_FILE = "input/program_config.json"
-STATE_FILE = "output/monitor/stock_positions_state.json"
-JOURNAL_FILE = "output/monitor/trade_journal.csv"
-INDEX_LOG_FILE = "output/logs/bull_index_trade_engine.log"
-NIFTY50_LOG_FILE = "output/logs/bull_nifty50_scanner.log"
-DAILY_LOG_FILE = "output/logs/bull_daily_scanner.log"
-SCAN_DISPLAY_FILE = "output/monitor/scan_display_data.json"
-SCAN_DISPLAY_INDEX_FILE = "output/monitor/scan_display_index.json"
-LIVE_EXECUTION_FLAG = "input/nifty50_live.flag"
-LIVE_EXECUTION_FLAG_INDEX = "input/index_live.flag"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+STATE_FILE = os.path.join(BASE_DIR, "output", "monitor", "stock_positions_state.json")
+JOURNAL_FILE = os.path.join(BASE_DIR, "output", "monitor", "trade_journal.csv")
+INDEX_LOG_FILE = os.path.join(BASE_DIR, "output", "logs", "bull_index_trade_engine.log")
+NIFTY50_LOG_FILE = os.path.join(BASE_DIR, "output", "logs", "bull_nifty50_scanner.log")
+DAILY_LOG_FILE = os.path.join(BASE_DIR, "output", "logs", "bull_daily_scanner.log")
+SCAN_DISPLAY_FILE = os.path.join(BASE_DIR, "output", "monitor", "scan_display_data.json")
+SCAN_DISPLAY_INDEX_FILE = os.path.join(BASE_DIR, "output", "monitor", "scan_display_index.json")
+LIVE_EXECUTION_FLAG = os.path.join(BASE_DIR, "input", "nifty50_live.flag")
+LIVE_EXECUTION_FLAG_INDEX = os.path.join(BASE_DIR, "input", "index_live.flag")
 
 DASHBOARD_PORT = 5050
 REFRESH_SECONDS = 1
 ACTIVE_EDIT_LOCKS = set()
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 PROGRAMS = {
     "index": {
@@ -77,7 +77,8 @@ PROGRAMS = {
             "lookback_days": {"label": "Lookback Days", "type": "number", "default": 30},
             "scan_interval": {"label": "Scan Interval (s)", "type": "number", "default": 300},
             "risk_percent": {"label": "Risk %", "type": "number", "default": 1.0},
-            "capital": {"label": "Capital", "type": "number", "default": 100000.0}
+            "capital": {"label": "Capital", "type": "number", "default": 100000.0},
+            "strike_range": {"label": "Strike Range (±)", "type": "number", "default": 0}
         }
     }
 }
@@ -208,12 +209,22 @@ def check_token_valid():
         if date_str:
             try:
                 from datetime import datetime as dt2
-                gen_date = dt2.strptime(date_str.split()[0], "%Y-%m-%d").date()
-                today = dt.now().date()
+                gen_dt = dt2.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+                now_dt = dt.now()
+                gen_date = gen_dt.date()
+                today = now_dt.date()
                 if gen_date < today:
                     return {"valid": False, "reason": f"Token expired (generated {date_str})"}
+                reset_cutoff = gen_dt.replace(hour=6, minute=0, second=0, microsecond=0)
+                if gen_dt < reset_cutoff and now_dt >= reset_cutoff:
+                    return {"valid": False, "reason": f"Token expired (generated {date_str} before 06:00 AM Zerodha reset)"}
             except Exception:
-                pass
+                try:
+                    gen_date = dt.strptime(date_str.split()[0], "%Y-%m-%d").date()
+                    if gen_date < dt.now().date():
+                        return {"valid": False, "reason": f"Token expired (generated {date_str})"}
+                except Exception:
+                    pass
         return {"valid": True, "reason": "Token valid"}
     except Exception as e:
         return {"valid": False, "reason": f"Token read error: {e}"}
@@ -363,9 +374,14 @@ def refresh_data():
             market_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
             if _last_scan_reset != today_str and now_ist >= market_open:
                 _last_scan_reset = today_str
-                empty_scan = {"date": today_str, "timestamp": now_ist.strftime("%Y-%m-%d %H:%M:%S"), "staged_trades": [], "carry_forward": [], "active_live": []}
                 for f in [SCAN_DISPLAY_FILE, SCAN_DISPLAY_INDEX_FILE]:
                     try:
+                        if os.path.exists(f):
+                            with open(f, "r") as fh:
+                                existing = json.load(fh)
+                            if existing.get("date") == today_str and existing.get("staged_trades"):
+                                continue  # Keep today's existing scan display data intact
+                        empty_scan = {"date": today_str, "timestamp": now_ist.strftime("%Y-%m-%d %H:%M:%S"), "staged_trades": [], "carry_forward": [], "active_live": []}
                         with open(f, "w") as fh:
                             json.dump(empty_scan, fh)
                     except Exception:
@@ -484,8 +500,20 @@ def refresh_data():
                                 tid = scan_sl.get("id")
 
                                 clean_sym = str(contract_name).replace(" ", "").upper()
+                                now_t = dt.now().time()
+                                cfg_f = load_config()
+                                fs_start_str = cfg_f.get("failsafe_start_time", "09:45")
+                                try:
+                                    f_h, f_m = map(int, fs_start_str.split(":"))
+                                    fs_start_t = datetime_time(f_h, f_m)
+                                except Exception:
+                                    fs_start_t = datetime_time(9, 45)
+
+                                # TASK 0: Pause automated exit execution before 09:45 AM due to opening market volatility
+                                if now_t < fs_start_t:
+                                    logging.info(f"[FAILSAFE PAUSED BEFORE {fs_start_str} AM] {contract_name} automated exit paused until {fs_start_str} AM (Current time: {now_t.strftime('%H:%M:%S')}).")
                                 # TASK 1: Pause automated exit execution if user is actively editing this symbol on the UI
-                                if clean_sym in ACTIVE_EDIT_LOCKS:
+                                elif clean_sym in ACTIVE_EDIT_LOCKS:
                                     logging.info(f"[FAILSAFE PAUSED] {contract_name} is currently being edited on UI. Automated exit execution paused.")
                                 # TASK 2: Only execute exit if SL > 0 (valid SL assigned via auto-fill or manual fill)
                                 elif ltp_val > 0 and sl_val > 0 and ltp_val <= sl_val:
@@ -497,13 +525,21 @@ def refresh_data():
                                     logging.info(f"[FAILSAFE MONITOR EXIT T3] {contract_name} LTP={ltp_val} >= T3={t3_val}")
                                     pos_obj = {"contract": contract_name, "position_size": qty, "quantity": qty}
                                     shared_close_position(_kite_session, pos_obj, True, p.get("product"))
-                                # 3. Trailing SL Stage 1 (T1 Hit -> Trail SL to Breakeven / Entry ONLY IF T1 > Entry)
-                                elif t_stage == 0 and t1_val > entry_pr and ltp_val >= t1_val and entry_pr > 0:
-                                    logging.info(f"[FAILSAFE TRAIL 1] {contract_name} LTP={ltp_val} >= T1={t1_val} -> Trailing SL to Breakeven ({entry_pr})")
-                                    if tid: trade_db.update_trade(tid, {"current_sl": entry_pr, "trailing_stage": 1})
-                                # 4. Trailing SL Stage 2 (T2 Hit -> Trail SL to T1 ONLY IF T2 > T1)
-                                elif t_stage == 1 and t2_val > t1_val and ltp_val >= t2_val and t1_val > 0:
-                                    logging.info(f"[FAILSAFE TRAIL 2] {contract_name} LTP={ltp_val} >= T2={t2_val} -> Trailing SL to T1 ({t1_val})")
+                                # Track highest price reached for position
+                                prev_high = float(scan_sl.get("high_price") or 0)
+                                pos_high = max(live_ltp, prev_high)
+                                if tid and live_ltp > prev_high:
+                                    trade_db.update_trade(tid, {"high_price": live_ltp})
+
+                                effective_entry = entry_pr if entry_pr > 0 else float(scan_sl.get("entry_spot") or 0)
+
+                                # 3. Trailing SL Stage 1 (T1 Hit -> Trail SL to Breakeven / Entry)
+                                if t_stage == 0 and t1_val > effective_entry and pos_high >= t1_val and effective_entry > 0:
+                                    logging.info(f"[FAILSAFE TRAIL 1] {contract_name} High={pos_high} >= T1={t1_val} -> Trailing SL to Breakeven ({effective_entry})")
+                                    if tid: trade_db.update_trade(tid, {"current_sl": effective_entry, "trailing_stage": 1})
+                                # 4. Trailing SL Stage 2 (T2 Hit -> Trail SL to T1)
+                                elif t_stage == 1 and t2_val > t1_val and pos_high >= t2_val and t1_val > 0:
+                                    logging.info(f"[FAILSAFE TRAIL 2] {contract_name} High={pos_high} >= T2={t2_val} -> Trailing SL to T1 ({t1_val})")
                                     if tid: trade_db.update_trade(tid, {"current_sl": t1_val, "trailing_stage": 2})
                         except Exception as fs_err:
                             logging.debug(f"Failsafe monitor error for {sym}: {fs_err}")
@@ -704,7 +740,13 @@ HTML_TEMPLATE = """
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'scan_export.csv';
+                const now = new Date();
+                const pad = n => String(n).padStart(2, '0');
+                const dd = pad(now.getDate());
+                const mm = pad(now.getMonth() + 1);
+                const yy = String(now.getFullYear()).slice(-2);
+                const hhmin = pad(now.getHours()) + pad(now.getMinutes());
+                a.download = `scan_export_${dd}_${mm}_${yy}_${hhmin}.csv`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -1026,11 +1068,11 @@ HTML_TEMPLATE = """
                     let slCell, t1Cell, actCell;
                     if (es && es.active) {
                         const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
-                        slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px" oninput="editStates['${uid}'].sl=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
-                        t1Cell = `<td><input id="t1_${uid}" value="${es.t1}" style="width:60px" oninput="editStates['${uid}'].t1=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
-                        t2Cell = `<td><input id="t2_${uid}" value="${es.t2}" style="width:60px" oninput="editStates['${uid}'].t2=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
-                        t3Cell = `<td><input id="t3_${uid}" value="${es.t3}" style="width:60px" oninput="editStates['${uid}'].t3=this.value" onchange="saveEdit('${uid}','${t.symbol||''}','${eng2}')"></td>`;
-                        actCell = `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.symbol||''}','${eng2}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
+                        slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px" oninput="editStates['${uid}'].sl=this.value" onchange="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')"></td>`;
+                        t1Cell = `<td><input id="t1_${uid}" value="${es.t1}" style="width:60px" oninput="editStates['${uid}'].t1=this.value" onchange="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')"></td>`;
+                        t2Cell = `<td><input id="t2_${uid}" value="${es.t2}" style="width:60px" oninput="editStates['${uid}'].t2=this.value" onchange="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')"></td>`;
+                        t3Cell = `<td><input id="t3_${uid}" value="${es.t3}" style="width:60px" oninput="editStates['${uid}'].t3=this.value" onchange="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')"></td>`;
+                        actCell = `<td><button class="btn-edit-save" onclick="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')">Save</button><button class="btn-edit-cancel" onclick="cancelEdit('${uid}')">X</button></td>`;
                     } else {
                         slCell = `<td>${slVal}</td>`;
                         t1Cell = `<td>${t1v}</td>`;
@@ -1038,7 +1080,7 @@ HTML_TEMPLATE = """
                         t3Cell = `<td>${t3v}</td>`;
                         const canEdit = st === 'active';
                         if (canEdit) {
-                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button></td>`;
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.contract||t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button></td>`;
                         } else {
                             actCell = `<td></td>`;
                         }
@@ -1879,8 +1921,10 @@ def api_save_config(prog_id):
 
 @app.route("/api/scan/clear", methods=["POST"])
 def api_scan_clear():
+    now_str = dt.now().strftime("%Y-%m-%d %H:%M:%S")
     empty_scan = {"date": dt.now().strftime("%Y-%m-%d"),
-                  "timestamp": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                  "timestamp": now_str,
+                  "cleared_at": now_str,
                   "staged_trades": [], "carry_forward": [], "active_live": []}
     for f in [SCAN_DISPLAY_FILE, SCAN_DISPLAY_INDEX_FILE]:
         try:
@@ -1972,7 +2016,7 @@ def api_scan_export():
                     ])
         csv_bytes = output.getvalue().encode("utf-8-sig")
         return Response(csv_bytes, mimetype="text/csv",
-                        headers={"Content-Disposition": f"attachment; filename=scan_export_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"})
+                        headers={"Content-Disposition": f"attachment; filename=scan_export_{dt.now().strftime('%d_%m_%y_%H%M')}.csv"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -2145,6 +2189,7 @@ def api_update_position():
     if t1 is not None and str(t1).strip() != "": vals["t1"] = float(t1)
     if t2 is not None and str(t2).strip() != "": vals["t2"] = float(t2)
     if t3 is not None and str(t3).strip() != "": vals["t3"] = float(t3)
+    vals["user_edited"] = True
     overrides = {}
     try:
         if os.path.exists(SL_TARGET_OVERRIDES_FILE):
@@ -2194,8 +2239,78 @@ def api_update_position():
             cached_data["all_trades"].append(entry)
             cached_data["positions"][symbol] = entry
             logging.info(f"[OVERRIDE] Created new DB trade for {engine}/{symbol}")
+
+        # Synchronize scan_display in memory and on disk so 1s polling preserves edit immediately
+        disp_file = SCAN_DISPLAY_FILE if engine == "nifty50" else SCAN_DISPLAY_INDEX_FILE
+        eng_disp = cached_data.get("scan_display", {}).get(engine, {})
+        clean_sym = str(symbol).replace(" ", "").upper()
+        if isinstance(eng_disp, dict):
+            for cat in ["staged_trades", "active_live", "carry_forward"]:
+                for item in eng_disp.get(cat, []):
+                    if isinstance(item, dict):
+                        i_sym = str(item.get("symbol") or "").replace(" ", "").upper()
+                        i_cnt = str(item.get("contract") or "").replace(" ", "").upper()
+                        if clean_sym in (i_sym, i_cnt) or i_sym in clean_sym or i_cnt in clean_sym:
+                            for k in update_keys:
+                                item[k] = vals[k]
+                            if "current_sl" in vals and "entry_spot" in item and item.get("entry_spot"):
+                                item["rr"] = round(calc_rr(item.get("entry_spot"), vals["current_sl"], vals.get("t1", item.get("t1")), vals.get("t2", item.get("t2"))), 2)
+            if os.path.exists(disp_file):
+                try:
+                    with open(disp_file, "w") as fh:
+                        json.dump(eng_disp, fh, indent=2)
+                except Exception as fe:
+                    logging.warning(f"Failed to update scan display file: {fe}")
+
     logging.info(f"Position override queued: {engine}/{symbol} {vals}")
     return jsonify({"ok": True})
+
+# ──────────────────────────────────────────────
+#  DAILY SELF-LEARNING TRADE JOURNAL API
+# ──────────────────────────────────────────────
+@app.route("/api/journal/get", methods=["GET"])
+def api_journal_get():
+    try:
+        from common.daily_trade_journal import load_journal_entries
+        return jsonify(load_journal_entries())
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/journal/sync", methods=["POST"])
+def api_journal_sync():
+    try:
+        from common.daily_trade_journal import generate_daily_journal
+        req = request.json or {}
+        dt_str = req.get("date")
+        entries = generate_daily_journal(dt_str, kite=_kite_session)
+        return jsonify({"ok": True, "count": len(entries), "entries": entries})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/journal/update", methods=["POST"])
+def api_journal_update():
+    try:
+        from common.daily_trade_journal import load_journal_entries, save_journal_entries
+        data = request.json or {}
+        symbol = data.get("symbol")
+        date_str = data.get("date")
+        remarks = data.get("remarks")
+        lesson = data.get("lesson")
+        if not symbol or not date_str:
+            return jsonify({"ok": False, "error": "symbol and date required"}), 400
+        entries = load_journal_entries()
+        updated = False
+        for e in entries:
+            if e.get("Date") == date_str and (e.get("Symbol") == symbol or symbol in e.get("Symbol", "")):
+                if remarks is not None: e["Analysis_Remarks"] = remarks
+                if lesson is not None: e["Self_Learning_Lesson"] = lesson
+                updated = True
+        if updated:
+            save_journal_entries(entries)
+            return jsonify({"ok": True})
+        return jsonify({"ok": False, "error": "entry not found"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 EXPORT_STATE_FILE = "output/monitor/export_state.json"
 
@@ -2269,6 +2384,26 @@ def auto_export_if_new_month():
     except Exception as e:
         print(f"Auto-export error: {e}")
 
+_last_eod_journal_triggered_date = None
+
+def auto_eod_journal_scheduler():
+    global _last_eod_journal_triggered_date
+    while True:
+        try:
+            now = dt.now()
+            today_str = now.strftime("%Y-%m-%d")
+            # Trigger once daily at/after 15:35 IST on weekdays (Mon-Fri)
+            if now.weekday() < 5 and (now.hour > 15 or (now.hour == 15 and now.minute >= 35)):
+                if _last_eod_journal_triggered_date != today_str:
+                    _last_eod_journal_triggered_date = today_str
+                    logging.info(f"[AUTO EOD JOURNAL] Market closed. Auto-generating EOD trade journal for {today_str}...")
+                    from common.daily_trade_journal import generate_daily_journal
+                    generate_daily_journal(target_date=today_str, kite=_kite_session)
+                    logging.info(f"[AUTO EOD JOURNAL] Successfully completed EOD trade journal sync for {today_str}.")
+        except Exception as e:
+            logging.warning(f"[AUTO EOD JOURNAL] Error in scheduler: {e}")
+        time.sleep(60)
+
 def main():
     os.makedirs("input", exist_ok=True)
     os.makedirs("output/logs", exist_ok=True)
@@ -2277,6 +2412,8 @@ def main():
     auto_export_if_new_month()
     worker = threading.Thread(target=refresh_data, daemon=True)
     worker.start()
+    eod_worker = threading.Thread(target=auto_eod_journal_scheduler, daemon=True)
+    eod_worker.start()
     print(f"Trading Control Center starting on http://localhost:{DASHBOARD_PORT}")
     print(f"Refresh interval: {REFRESH_SECONDS}s")
     print("Available programs:")
