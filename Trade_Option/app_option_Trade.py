@@ -1990,7 +1990,7 @@ def api_scan_export():
                          "AncherT", "EntryTime", "Result", "CF", "RR", "Engine", "Status"])
         files = [("Nifty 50", SCAN_DISPLAY_FILE), ("Index", SCAN_DISPLAY_INDEX_FILE)]
         for label, path in files:
-            full = os.path.join(BASE_DIR, path)
+            full = path if os.path.isabs(path) else os.path.join(BASE_DIR, path)
             if not os.path.exists(full):
                 continue
             with open(full) as f:
