@@ -227,6 +227,21 @@ def load_kite_session(token_file=TOKEN_FILE):
         raise ValueError("Corrupted token file.")
     return data["api_key"], data["access_token"]
 
+def ensure_kite_session(kite, token_file=TOKEN_FILE):
+    """Ensure the KiteConnect object in memory has the latest access token from disk if it changed."""
+    try:
+        if not kite or not os.path.exists(token_file):
+            return
+        with open(token_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        at = data.get("access_token")
+        if at and getattr(kite, "access_token", None) != at:
+            kite.set_access_token(at)
+            logging.info(f"[KITE_SESSION] Updated in-memory KiteConnect access_token from {token_file}")
+    except Exception as e:
+        pass
+
+
 def log_to_journal(symbol, pattern, timeframe, action, status, details="", pnl_pct=0.0, entry="", sl="", target="", rr="", journal_file=JOURNAL_FILE, lock=None, event_time=None):
     file_exists = os.path.exists(journal_file)
     headers = ["Timestamp", "Symbol", "Pattern", "Timeframe", "Action", "Status", "Entry", "SL", "Target", "RR", "Details", "P&L %"]
@@ -1147,14 +1162,15 @@ def sync_kite_positions(kite, registry, positions_dict, lock, engine, timeframe_
                 if sym in positions_dict:
                     if not positions_dict[sym].get("option_token"):
                         positions_dict[sym]["option_token"] = int(p.get("instrument_token", 0))
-                    scan_sl = lookup_scan_sl_target(contract, sym, engine, kite, entry, timeframe_entry, timeframe_anchor)
-                    if scan_sl:
-                        for k, v in scan_sl.items():
-                            positions_dict[sym][k] = v
-                        tid = positions_dict[sym].get("trade_id")
-                        if tid:
-                            import trade_db
-                            trade_db.update_trade(tid, scan_sl)
+                    if not positions_dict[sym].get("user_edited"):
+                        scan_sl = lookup_scan_sl_target(contract, sym, engine, kite, entry, timeframe_entry, timeframe_anchor)
+                        if scan_sl:
+                            for k, v in scan_sl.items():
+                                positions_dict[sym][k] = v
+                            tid = positions_dict[sym].get("trade_id")
+                            if tid:
+                                import trade_db
+                                trade_db.update_trade(tid, scan_sl)
                     continue
                 positions_dict[sym] = {
                     "contract": contract, "option_token": int(p.get("instrument_token", 0)),
@@ -1229,6 +1245,33 @@ def lookup_scan_sl_target(contract, symbol, engine, kite=None, entry_price=0, ti
         
     stock_key = f"{symbol}_{entry_date}".replace(" ", "").upper()
     clean_c = stock_key if is_stock else str(contract or symbol).replace(" ", "").upper()
+
+    # 0. Check sl_target_overrides.json first for any user overrides
+    try:
+        ov_paths = [
+            os.path.join(os.getcwd(), "output", "monitor", "sl_target_overrides.json"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "output", "monitor", "sl_target_overrides.json"),
+            os.path.join(os.path.dirname(__file__), "output", "monitor", "sl_target_overrides.json")
+        ]
+        ov_path = next((p for p in ov_paths if os.path.exists(p)), None)
+        if ov_path:
+            with open(ov_path, encoding="utf-8") as f:
+                overrides = json.load(f)
+            for eng_k in (engine, "nifty50", "index"):
+                eng_ov = overrides.get(eng_k, {})
+                for sym_k, vals in eng_ov.items():
+                    clean_k = str(sym_k).replace(" ", "").upper()
+                    if clean_k and (clean_k == clean_c or clean_c in clean_k or clean_k in clean_c):
+                        return {
+                            "current_sl": vals.get("current_sl"),
+                            "t1": vals.get("t1"),
+                            "t2": vals.get("t2"),
+                            "t3": vals.get("t3"),
+                            "pattern": "USER_OVERRIDE",
+                            "user_edited": True
+                        }
+    except Exception:
+        pass
     
     try:
         import trade_db
@@ -1305,7 +1348,9 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                 "result": result,
                 "carry_forward": False,
                 "rr": round(rr, 2),
-                "candle_a_time": t.get("candle_a_time", "")
+                "candle_a_time": t.get("candle_a_time", ""),
+                "timeframe": t.get("timeframe", ""),
+                "candle_tf_time": t.get("candle_tf_time", "")
             }
         new_staged = [build_trade(t, t.get("pattern", "BE_ABCD"), t.get("entry_time", now_str), None) for t in (staged or [])]
         carry_fwd = []
@@ -1330,38 +1375,47 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
         def _trade_key(t):
             return str(t.get("contract") or t.get("symbol") or "").replace(" ", "").upper()
 
-        new_keys = {_trade_key(t) for t in new_staged if _trade_key(t)}
-
+        cleared_at = None
         preserved = []
         try:
             if os.path.exists(display_file):
                 with open(display_file) as f:
                     existing_data = json.load(f)
+                cleared_at = existing_data.get("cleared_at")
                 for t in existing_data.get("staged_trades", []):
                     k = _trade_key(t)
-                    if k and k not in new_keys and k not in active_keys:
+                    if k and k not in active_keys:
                         preserved.append(t)
         except Exception:
             pass
 
-        staged_list = preserved + new_staged
+        # Also pull from trade_db cycle store if engine_name is available
+        db_staged = []
+        if engine_name:
+            try:
+                cycle_trades = trade_db.get_cycle_trades(engine_name)
+                db_staged = [build_trade(t, t.get("pattern", "BE_ABCD"), t.get("entry_time", now_str), None) for t in (cycle_trades or [])]
+            except Exception:
+                pass
 
-        # Deduplicate staged trades by symbol: keep freshest entry_time & highest RR
-        symbol_map = {}
+        staged_list = preserved + db_staged + new_staged
+
+        # Deduplicate staged trades by unique contract key: keep freshest entry_time & highest RR
+        contract_map = {}
         for t in staged_list:
-            sym = t.get("symbol") or t.get("contract")
-            if not sym:
+            key = _trade_key(t)
+            if not key or key in active_keys:
                 continue
-            if sym not in symbol_map:
-                symbol_map[sym] = t
+            if key not in contract_map:
+                contract_map[key] = t
             else:
-                prev = symbol_map[sym]
+                prev = contract_map[key]
                 prev_time = str(prev.get("entry_time") or "")
                 curr_time = str(t.get("entry_time") or "")
                 if curr_time > prev_time or (curr_time == prev_time and float(t.get("rr", 0)) > float(prev.get("rr", 0))):
-                    symbol_map[sym] = t
+                    contract_map[key] = t
 
-        deduped_staged = list(symbol_map.values())
+        deduped_staged = list(contract_map.values())
         deduped_staged.sort(key=lambda x: float(x.get("rr", 0)), reverse=True)
 
         data = {
@@ -1519,6 +1573,27 @@ def reconcile_positions(kite, registry, positions_dict, lock, engine, timeframe_
     if save_state_fn:
         save_state_fn()
 
+def is_setup_already_completed(df_candles, candle_time, t1_target, sl_target):
+    """Return True if any subsequent candle after candle_time touched T1 target or hit SL target."""
+    if df_candles is None or df_candles.empty or not candle_time:
+        return False
+    try:
+        c_time_str = str(candle_time)
+        subseq = df_candles[df_candles['date'].astype(str) > c_time_str]
+        if subseq.empty:
+            return False
+        max_h = float(subseq['high'].max())
+        min_l = float(subseq['low'].min())
+        t1_val = float(t1_target) if t1_target else 0
+        sl_val = float(sl_target) if sl_target else 0
+        if t1_val > 0 and max_h >= t1_val:
+            return True
+        if sl_val > 0 and min_l <= sl_val:
+            return True
+        return False
+    except Exception:
+        return False
+
 def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anchor,
                 entry_scanners, anchor_scanners, resolve_fn, engine_name,
                 timeframe_entry, timeframe_anchor, timeframe_fallback,
@@ -1605,8 +1680,8 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
                     matched = True
                     break
                 key = f"{symbol}|{result_ce['Pattern']}|CE|{strike}"
-                if trade_db.is_pattern_executed(engine_name, key):
-                    logging.info(f"CE MATCH already executed (skip): {ce['tradingsymbol']} | {result_ce['Pattern']}")
+                if is_setup_already_completed(df_ce_e, candle_time, result_ce.get("T1"), result_ce.get("SL")):
+                    logging.info(f"CE MATCH already completed T1/SL (skip): {ce['tradingsymbol']} | {result_ce['Pattern']}")
                     matched = True
                     break
                 pos_size = calculate_position_size(current_spot, result_ce["SL"])
@@ -1643,8 +1718,8 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
                     matched = True
                     break
                 key = f"{symbol}|{result_pe['Pattern']}|PE|{strike}"
-                if trade_db.is_pattern_executed(engine_name, key):
-                    logging.info(f"PE MATCH already executed (skip): {pe['tradingsymbol']} | {result_pe['Pattern']}")
+                if is_setup_already_completed(df_pe_e, candle_time, result_pe.get("T1"), result_pe.get("SL")):
+                    logging.info(f"PE MATCH already completed T1/SL (skip): {pe['tradingsymbol']} | {result_pe['Pattern']}")
                     matched = True
                     break
                 pos_size = calculate_position_size(current_spot, result_pe["SL"])
@@ -1680,98 +1755,197 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
     return trades
 
 
+def _load_program_config_file():
+    possible_paths = [
+        os.path.join(os.getcwd(), "input", "program_config.json"),
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "input", "program_config.json"),
+        os.path.join(os.path.dirname(__file__), "input", "program_config.json")
+    ]
+    cfg_path = next((p for p in possible_paths if os.path.exists(p)), None)
+    if cfg_path:
+        try:
+            with open(cfg_path, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
 def monitor_active_positions(kite, registry, positions_dict, lock, product_type, engine_name,
                               timeframe_entry, trade_db, log_fn, save_state_fn=None,
                               live=True):
     from_date = (dt.now() - timedelta(days=2)).strftime("%Y-%m-%d")
     to_date = dt.now().strftime("%Y-%m-%d")
     to_clear = []
-    with lock:
-        for sym, pos in positions_dict.items():
-            try:
-                token = pos.get("option_token") or registry.get(sym, {}).get("token")
-                if not token:
-                    continue
-                df = fetch_and_resample_candles(kite, token, from_date, to_date, timeframe_entry)
-                if df.empty:
-                    continue
-                last = df.iloc[-1]
-                cp = float(last['close'])
-                hp = float(last['high'])
-                tid = pos.get("trade_id")
-                is_stock = pos.get("position_type") == "stock"
 
-                # Check live quote LTP & high for instant tick-level execution
-                try:
-                    contract_name = pos.get("contract") or pos.get("symbol") or sym
-                    exch = "NSE" if is_stock else "NFO"
-                    q_key = f"{exch}:{contract_name}"
-                    q_res = kite.quote([q_key])
-                    if q_key in q_res:
-                        q_info = q_res[q_key]
-                        live_ltp = float(q_info.get("last_price", 0))
-                        live_h = float(q_info.get("ohlc", {}).get("high", 0))
-                        if live_ltp > 0:
-                            cp = live_ltp
-                            hp = max(hp, live_h, live_ltp)
-                except Exception as q_err:
-                    logging.debug(f"Live quote fetch error for {sym}: {q_err}")
-                sl_hit = cp <= pos.get("current_sl", 0)
-                if sl_hit:
-                    logging.warning(f"SL: {sym} at {cp}")
-                    if is_stock:
-                        close_stock_position(kite, pos, live, product_type)
-                    else:
-                        close_position(kite, pos, live, product_type)
-                    entry_s = pos.get("entry_spot", 0)
-                    pnl = ((cp - entry_s) / entry_s * 100) if entry_s else 0
-                    log_fn(sym, pos.get("pattern", ""), timeframe_entry, "EXIT_SL", "CLOSED",
-                           f"SL hit: {cp}", pnl,
-                           entry=entry_s, sl=pos.get("current_sl", 0), target=pos.get("t1", ""),
-                           event_time=last.get('date'))
-                    if tid:
-                        trade_db.update_trade(tid, {"status": "SL_HIT", "exit_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"), "pnl_percent": round(pnl, 2)})
-                    to_clear.append(sym)
+    # Load sl_mode from program config if available ("hybrid", "candle_close", or "tick_ltp")
+    cfg = _load_program_config_file()
+    sl_mode = cfg.get("sl_mode", "hybrid")
+    emergency_buffer_pct = float(cfg.get("emergency_buffer_pct", 0.15))
+    failsafe_start_str = cfg.get("failsafe_start_time", "09:45")
+    try:
+        f_h, f_m = map(int, failsafe_start_str.split(":"))
+        fs_start_t = datetime_time(f_h, f_m)
+    except Exception:
+        fs_start_t = datetime_time(9, 45)
+
+    if dt.now().time() < fs_start_t:
+        logging.info(f"[FAILSAFE PAUSED BEFORE {failsafe_start_str} AM] Automated active position exit checks paused until {failsafe_start_str} AM.")
+        return
+
+    with lock:
+        items = list(positions_dict.items())
+
+    for sym, pos in items:
+        try:
+            token = pos.get("option_token") or registry.get(sym, {}).get("token")
+            if not token:
+                continue
+
+            pos_tf = pos.get("timeframe") or timeframe_entry
+            df = fetch_and_resample_candles(kite, token, from_date, to_date, pos_tf)
+            if df.empty:
+                continue
+
+            last = df.iloc[-1]
+            cp = float(last['close'])
+            tid = pos.get("trade_id")
+            is_stock = pos.get("position_type") == "stock"
+            current_sl = float(pos.get("current_sl", 0))
+
+            # Fetch live quote for LTP
+            live_ltp = 0.0
+            try:
+                contract_name = pos.get("contract") or pos.get("symbol") or sym
+                exch = "NSE" if is_stock else "NFO"
+                q_key = f"{exch}:{contract_name}"
+                q_res = kite.quote([q_key])
+                if q_key in q_res:
+                    q_info = q_res[q_key]
+                    live_ltp = float(q_info.get("last_price", 0))
+            except Exception as q_err:
+                logging.debug(f"Live quote fetch error for {sym}: {q_err}")
+
+            # Compute High (hp) strictly for candles AFTER trade entry_time + live_ltp
+            entry_time_str = str(pos.get("entry_time", ""))
+            hp = live_ltp if live_ltp > 0 else cp
+            for idx in range(len(df)):
+                c_row = df.iloc[idx]
+                c_date = str(c_row.get('date', ''))
+                if entry_time_str and c_date < entry_time_str[:16]:
                     continue
-                if pos.get("trailing_stage", 0) == 0 and pos.get("t1") and hp >= pos["t1"]:
-                    pos["current_sl"] = pos.get("entry_spot", 0)
-                    pos["trailing_stage"] = 1
-                    logging.info(f"TRAIL-1 {sym}: SL=BE ({pos['current_sl']:.2f})")
-                    log_fn(sym, pos.get("pattern", ""), timeframe_entry, "TRAIL_BE", "MUTATED",
-                           f"SL={pos['current_sl']:.2f}",
-                           entry=pos.get("entry_spot", 0), sl=pos["current_sl"], target=pos.get("t1", ""),
-                           event_time=last.get('date'))
-                    if tid:
-                        trade_db.update_trade(tid, {"trailing_stage": 1, "current_sl": pos["current_sl"]})
-                elif pos.get("trailing_stage", 0) == 1 and pos.get("t2") and hp >= pos["t2"]:
-                    pos["current_sl"] = pos.get("t1", 0)
-                    pos["trailing_stage"] = 2
-                    logging.info(f"TRAIL-2 {sym}: SL=T1 ({pos['current_sl']:.2f})")
-                    log_fn(sym, pos.get("pattern", ""), timeframe_entry, "TRAIL_T1", "MUTATED",
-                           f"SL={pos['current_sl']:.2f}",
-                           entry=pos.get("entry_spot", 0), sl=pos["current_sl"], target=pos.get("t2", ""),
-                           event_time=last.get('date'))
-                    if tid:
-                        trade_db.update_trade(tid, {"trailing_stage": 2, "current_sl": pos["current_sl"]})
-                if pos.get("t3") and hp >= pos["t3"]:
-                    logging.info(f"T3: {sym} at {pos['t3']}")
-                    if pos.get("position_type") == "stock":
-                        close_stock_position(kite, pos, live, product_type)
-                    else:
-                        close_position(kite, pos, live, product_type)
-                    entry_s = pos.get("entry_spot", 0)
-                    pnl = ((pos["t3"] - entry_s) / entry_s * 100) if entry_s else 0
-                    log_fn(sym, pos.get("pattern", ""), timeframe_entry, "EXIT_T3", "CLOSED",
-                           f"T3={pos['t3']}", pnl,
-                           entry=entry_s, sl=pos.get("current_sl", ""), target=pos["t3"],
-                           event_time=last.get('date'))
-                    if tid:
-                        trade_db.update_trade(tid, {"status": "TARGET_HIT", "exit_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"), "pnl_percent": round(pnl, 2)})
-                    to_clear.append(sym)
-            except Exception as e:
-                logging.error(f"Risk error {sym}: {e}")
-        for s in to_clear:
-            positions_dict.pop(s, None)
+                hp = max(hp, float(c_row['high']))
+
+            sl_hit = False
+            sl_reason = ""
+            event_time = last.get('date')
+
+            # Track current TF candle timestamp on position for UI/monitoring
+            with lock:
+                if sym in positions_dict:
+                    positions_dict[sym]["candle_tf_time"] = str(event_time) if event_time else ""
+                    positions_dict[sym]["timeframe"] = pos_tf
+
+            # 1) Closing-Basis SL Evaluation (including delayed-start catch-up for past closed candles)
+            if current_sl > 0:
+                entry_time_str = str(pos.get("entry_time", ""))
+                # Scan completed candles in df to check if any closed below SL
+                for idx in range(len(df)):
+                    c_row = df.iloc[idx]
+                    c_date = str(c_row.get('date', ''))
+                    if entry_time_str and c_date < entry_time_str[:16]:
+                        continue
+                    if float(c_row['close']) <= current_sl:
+                        sl_hit = True
+                        sl_reason = f"CANDLE_CLOSE_SL ({pos_tf} Bar @ {c_date})"
+                        cp = float(c_row['close'])
+                        event_time = c_row.get('date')
+                        break
+
+            # 2) Emergency Hard Stop / Direct LTP evaluation
+            if not sl_hit and current_sl > 0 and live_ltp > 0:
+                if sl_mode == "tick_ltp" and live_ltp <= current_sl:
+                    sl_hit = True
+                    sl_reason = f"TICK_LTP_SL ({live_ltp})"
+                    cp = live_ltp
+                elif sl_mode == "hybrid":
+                    emergency_threshold = current_sl * (1.0 - emergency_buffer_pct)
+                    if live_ltp <= emergency_threshold:
+                        sl_hit = True
+                        sl_reason = f"EMERGENCY_HARD_SL (LTP {live_ltp:.2f} <= {emergency_threshold:.2f})"
+                        cp = live_ltp
+
+            if sl_hit:
+                logging.warning(f"SL [{sl_reason}]: {sym} at {cp} (TF: {pos_tf})")
+                if is_stock:
+                    close_stock_position(kite, pos, live, product_type)
+                else:
+                    close_position(kite, pos, live, product_type)
+                entry_s = pos.get("entry_spot", 0)
+                pnl = ((cp - entry_s) / entry_s * 100) if entry_s else 0
+                log_fn(sym, pos.get("pattern", ""), pos_tf, "EXIT_SL", "CLOSED",
+                       f"SL hit [{sl_reason}]: {cp}", pnl,
+                       entry=entry_s, sl=current_sl, target=pos.get("t1", ""),
+                       event_time=event_time)
+                if tid:
+                    trade_db.update_trade(tid, {
+                        "status": "SL_HIT",
+                        "exit_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "pnl_percent": round(pnl, 2),
+                        "details": f"SL hit [{sl_reason}] | TF: {pos_tf}"
+                    })
+                to_clear.append(sym)
+                continue
+            if pos.get("trailing_stage", 0) == 0 and pos.get("t1") and hp >= pos["t1"]:
+                new_sl = pos.get("entry_spot", 0)
+                with lock:
+                    if sym in positions_dict:
+                        positions_dict[sym]["current_sl"] = new_sl
+                        positions_dict[sym]["trailing_stage"] = 1
+                logging.info(f"TRAIL-1 {sym}: SL=BE ({new_sl:.2f})")
+                log_fn(sym, pos.get("pattern", ""), timeframe_entry, "TRAIL_BE", "MUTATED",
+                       f"SL={new_sl:.2f}",
+                       entry=pos.get("entry_spot", 0), sl=new_sl, target=pos.get("t1", ""),
+                       event_time=last.get('date'))
+                if tid:
+                    trade_db.update_trade(tid, {"trailing_stage": 1, "current_sl": new_sl})
+            elif pos.get("trailing_stage", 0) == 1 and pos.get("t2") and hp >= pos["t2"]:
+                new_sl = pos.get("t1", 0)
+                with lock:
+                    if sym in positions_dict:
+                        positions_dict[sym]["current_sl"] = new_sl
+                        positions_dict[sym]["trailing_stage"] = 2
+                logging.info(f"TRAIL-2 {sym}: SL=T1 ({new_sl:.2f})")
+                log_fn(sym, pos.get("pattern", ""), timeframe_entry, "TRAIL_T1", "MUTATED",
+                       f"SL={new_sl:.2f}",
+                       entry=pos.get("entry_spot", 0), sl=new_sl, target=pos.get("t2", ""),
+                       event_time=last.get('date'))
+                if tid:
+                    trade_db.update_trade(tid, {"trailing_stage": 2, "current_sl": new_sl})
+            if pos.get("t3") and hp >= pos["t3"]:
+                logging.info(f"T3: {sym} at {pos['t3']}")
+                if pos.get("position_type") == "stock":
+                    close_stock_position(kite, pos, live, product_type)
+                else:
+                    close_position(kite, pos, live, product_type)
+                entry_s = pos.get("entry_spot", 0)
+                pnl = ((pos["t3"] - entry_s) / entry_s * 100) if entry_s else 0
+                log_fn(sym, pos.get("pattern", ""), timeframe_entry, "EXIT_T3", "CLOSED",
+                       f"T3={pos['t3']}", pnl,
+                       entry=entry_s, sl=pos.get("current_sl", ""), target=pos["t3"],
+                       event_time=last.get('date'))
+                if tid:
+                    trade_db.update_trade(tid, {"status": "TARGET_HIT", "exit_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"), "pnl_percent": round(pnl, 2)})
+                to_clear.append(sym)
+        except Exception as e:
+            logging.error(f"Risk error {sym}: {e}")
+
+    if to_clear:
+        with lock:
+            for s in to_clear:
+                positions_dict.pop(s, None)
+
+    if to_clear and save_state_fn:
+        save_state_fn()
     if to_clear and save_state_fn:
         save_state_fn()
 
