@@ -1377,28 +1377,7 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
 
         cleared_at = None
         preserved = []
-        try:
-            if os.path.exists(display_file):
-                with open(display_file) as f:
-                    existing_data = json.load(f)
-                cleared_at = existing_data.get("cleared_at")
-                for t in existing_data.get("staged_trades", []):
-                    k = _trade_key(t)
-                    if k and k not in active_keys:
-                        preserved.append(t)
-        except Exception:
-            pass
-
-        # Also pull from trade_db cycle store if engine_name is available
-        db_staged = []
-        if engine_name:
-            try:
-                cycle_trades = trade_db.get_cycle_trades(engine_name)
-                db_staged = [build_trade(t, t.get("pattern", "BE_ABCD"), t.get("entry_time", now_str), None) for t in (cycle_trades or [])]
-            except Exception:
-                pass
-
-        staged_list = preserved + db_staged + new_staged
+        staged_list = new_staged if new_staged else []
 
         # Deduplicate staged trades by unique contract key: keep freshest entry_time & highest RR
         contract_map = {}
