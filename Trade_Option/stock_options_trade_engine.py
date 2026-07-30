@@ -347,6 +347,7 @@ def execute_highest_rr_trade(kite, staged):
     if live_ok:
         with position_lock:
             if sym in ACTIVE_POSITIONS:
+                logging.info(f"TF Entry: {TIMEFRAME_ENTRY} | Anchor: {TIMEFRAME_ANCHOR} | Interval: {SCAN_INTERVAL_SECONDS}s | Risk: {MAX_RISK_PERCENT}%")
                 logging.info(f"{sym} already active; skipping new trade")
                 return
             pos = {
@@ -428,6 +429,7 @@ def run_anchor_scan(kite):
         ("S4", find_anchor_bullish_harami),
         ("S5", find_anchor_two_higher_highs),
     ]
+    formed_anchors = []
     scan_order = sorted(STOCK_REGISTRY.keys())
     batch_size = 2
     for i in range(0, len(scan_order), batch_size):
@@ -458,17 +460,32 @@ def run_anchor_scan(kite):
                 for name, scanner_func in scanners:
                     result = scanner_func(df)
                     if result:
+                        t1, t2, t3 = find_profit_targets(df, result["Close"], stop_loss=result["SL"])
+                        risk = round(result["Close"] - result["SL"], 2) if (result["Close"] > result["SL"]) else 0
+                        rr = round((t1 - result["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
+                        anchor_item = {
+                            "symbol": symbol,
+                            "contract": symbol,
+                            "entry_spot": result["Close"],
+                            "current_sl": result["SL"],
+                            "t1": t1, "t2": t2, "t3": t3,
+                            "rr": rr,
+                            "pattern": result["Pattern"],
+                            "timeframe": TIMEFRAME_ANCHOR,
+                            "side": "CE",
+                            "entry_time": result.get("CandleATime", "")
+                        }
+                        formed_anchors.append(anchor_item)
                         logging.info(f"ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
                         log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
                                        "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
-                                        entry=result["Close"], sl=result["SL"], target="")
+                                        entry=result["Close"], sl=result["SL"], target=t1 or "")
                         break
         time.sleep(1)
-    logging.info("Anchor scan complete")
-    try:
-        run_scan_cycle(kite)
-    except Exception as e:
-        logging.error(f"Error executing scan cycle post anchor scan: {e}")
+    logging.info(f"Anchor scan complete: found {len(formed_anchors)} formed patterns")
+    if formed_anchors:
+        with position_lock:
+            shared_write_display(formed_anchors, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
 
 # ──────────────────────────────────────────────
 #  POSITION MONITORING — SL, TRAILING, TARGETS

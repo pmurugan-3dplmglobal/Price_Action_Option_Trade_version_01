@@ -207,6 +207,7 @@ def run_anchor_scan(kite):
         ("Setup_4", find_anchor_bullish_harami),
         ("Setup_5", find_anchor_two_higher_highs),
     ]
+    formed_anchors = []
     for symbol, config in INDEX_REGISTRY.items():
         if os.path.exists(ANCHOR_SCAN_STOP_FILE):
             logging.info("Anchor scan stopped by user")
@@ -255,20 +256,42 @@ def run_anchor_scan(kite):
         for name, scanner in scanners:
             result_ce = scanner(df_ce)
             if result_ce:
+                t1, t2, t3 = find_profit_targets(df_ce, result_ce["Close"], stop_loss=result_ce["SL"])
+                risk = round(result_ce["Close"] - result_ce["SL"], 2) if (result_ce["Close"] > result_ce["SL"]) else 0
+                rr = round((t1 - result_ce["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
+                formed_anchors.append({
+                    "symbol": symbol, "contract": ce['tradingsymbol'], "entry_spot": result_ce["Close"],
+                    "current_sl": result_ce["SL"], "t1": t1, "t2": t2, "t3": t3, "rr": rr,
+                    "pattern": result_ce["Pattern"], "timeframe": TIMEFRAME_ANCHOR, "side": "CE",
+                    "entry_time": result_ce.get("CandleATime", "")
+                })
                 logging.info(f"ANCHOR CE MATCH: {ce['tradingsymbol']} | {result_ce['Pattern']} | Close: {result_ce['Close']}")
                 log_to_journal(symbol, result_ce["Pattern"], TIMEFRAME_ANCHOR,
                                "ANCHOR_CE", "SCANNED", "A formation from anchor scan",
-                               entry=result_ce["Close"], sl=result_ce["SL"], target="",
+                               entry=result_ce["Close"], sl=result_ce["SL"], target=t1 or "",
                                event_time=result_ce.get("CandleTime") or result_ce.get("date"))
                 break
             result_pe = scanner(df_pe)
             if result_pe:
+                t1, t2, t3 = find_profit_targets(df_pe, result_pe["Close"], stop_loss=result_pe["SL"])
+                risk = round(result_pe["Close"] - result_pe["SL"], 2) if (result_pe["Close"] > result_pe["SL"]) else 0
+                rr = round((t1 - result_pe["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
+                formed_anchors.append({
+                    "symbol": symbol, "contract": pe['tradingsymbol'], "entry_spot": result_pe["Close"],
+                    "current_sl": result_pe["SL"], "t1": t1, "t2": t2, "t3": t3, "rr": rr,
+                    "pattern": result_pe["Pattern"], "timeframe": TIMEFRAME_ANCHOR, "side": "PE",
+                    "entry_time": result_pe.get("CandleATime", "")
+                })
                 logging.info(f"ANCHOR PE MATCH: {pe['tradingsymbol']} | {result_pe['Pattern']} | Close: {result_pe['Close']}")
                 log_to_journal(symbol, result_pe["Pattern"], TIMEFRAME_ANCHOR,
                                "ANCHOR_PE", "SCANNED", "A formation from anchor scan",
-                               entry=result_pe["Close"], sl=result_pe["SL"], target="",
+                               entry=result_pe["Close"], sl=result_pe["SL"], target=t1 or "",
                                event_time=result_pe.get("CandleTime") or result_pe.get("date"))
                 break
+    logging.info(f"Index anchor scan complete: found {len(formed_anchors)} formed patterns")
+    if formed_anchors:
+        with position_lock:
+            shared_write_display(formed_anchors, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "index")
 
 
 def execute_index_entry(kite, pos):
