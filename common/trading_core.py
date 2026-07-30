@@ -1683,26 +1683,44 @@ def reconcile_positions(kite, registry, positions_dict, lock, engine, timeframe_
     if save_state_fn:
         save_state_fn()
 
-def is_setup_already_completed(df_candles, candle_time, t1_target, sl_target):
-    """Return True if any subsequent candle after candle_time touched T1 target or hit SL target."""
-    if df_candles is None or df_candles.empty or not candle_time:
-        return False
+def is_anchor_valid_and_active(df_anchor, candle_a_time, sl_target, t1_target):
+    """
+    Generic Universal Rule (Anchor TF Specific):
+    For a given Anchor TF dataframe (`df_anchor`), verify that:
+    1. Anchor is newest/valid.
+    2. No subsequent candle on this Anchor TF closed below SL (closing basis for SL).
+    3. No subsequent candle on this Anchor TF touched T1 (high price >= T1).
+    Returns True if Anchor is valid and active; False if invalidated or already completed.
+    """
+    if df_anchor is None or df_anchor.empty or not candle_a_time:
+        return True
     try:
-        c_time_str = str(candle_time)
-        subseq = df_candles[df_candles['date'].astype(str) > c_time_str]
+        c_time_str = str(candle_a_time)
+        if 'date' not in df_anchor.columns:
+            return True
+        subseq = df_anchor[df_anchor['date'].astype(str) > c_time_str]
         if subseq.empty:
+            return True
+        
+        sl_val = float(sl_target) if sl_target else 0.0
+        t1_val = float(t1_target) if t1_target else 0.0
+        
+        # Rule 1: Discard if any subsequent Anchor TF candle closed below SL
+        if sl_val > 0 and (subseq['close'].astype(float) <= sl_val).any():
             return False
-        max_h = float(subseq['high'].max())
-        min_l = float(subseq['low'].min())
-        t1_val = float(t1_target) if t1_target else 0
-        sl_val = float(sl_target) if sl_target else 0
-        if t1_val > 0 and max_h >= t1_val:
-            return True
-        if sl_val > 0 and min_l <= sl_val:
-            return True
-        return False
-    except Exception:
-        return False
+            
+        # Rule 2: Discard if any subsequent Anchor TF candle touched T1 (high >= T1)
+        if t1_val > 0 and (subseq['high'].astype(float) >= t1_val).any():
+            return False
+            
+        return True
+    except Exception as e:
+        logging.warning(f"Error checking anchor validity: {e}")
+        return True
+
+def is_setup_already_completed(df_candles, candle_time, t1_target, sl_target):
+    """Return True if setup was completed or invalidated."""
+    return not is_anchor_valid_and_active(df_candles, candle_time, sl_target, t1_target)
 
 def safe_kite_call(func, *args, retries=3, delay=0.8, **kwargs):
     for attempt in range(retries):
@@ -1802,7 +1820,8 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
                     matched = True
                     break
                 key = f"{symbol}|{result_ce['Pattern']}|CE|{strike}"
-                if is_setup_already_completed(df_ce_e, candle_time, result_ce.get("T1"), result_ce.get("SL")):
+                candle_a_time = str(result_ce.get("CandleATime", ""))
+                if not is_anchor_valid_and_active(df_ce_a, candle_a_time or candle_time, result_ce.get("SL"), result_ce.get("T1")):
                     logging.info(f"CE MATCH already completed T1/SL (skip): {ce['tradingsymbol']} | {result_ce['Pattern']}")
                     matched = True
                     break
@@ -1840,7 +1859,8 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
                     matched = True
                     break
                 key = f"{symbol}|{result_pe['Pattern']}|PE|{strike}"
-                if is_setup_already_completed(df_pe_e, candle_time, result_pe.get("T1"), result_pe.get("SL")):
+                candle_a_time = str(result_pe.get("CandleATime", ""))
+                if not is_anchor_valid_and_active(df_pe_a, candle_a_time or candle_time, result_pe.get("SL"), result_pe.get("T1")):
                     logging.info(f"PE MATCH already completed T1/SL (skip): {pe['tradingsymbol']} | {result_pe['Pattern']}")
                     matched = True
                     break

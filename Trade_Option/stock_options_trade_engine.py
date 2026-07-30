@@ -47,6 +47,7 @@ from trading_core import (
     scan_symbol,
     monitor_active_positions as shared_monitor_positions,
     simulate_trade_outcome as shared_simulate,
+    is_anchor_valid_and_active,
     STOCK_REGISTRY,
     SUPER_STOCKS
 )
@@ -464,14 +465,9 @@ def run_anchor_scan(kite):
                         sl_val = result["SL"]
                         t1, t2, t3 = find_profit_targets(df, result["Close"], stop_loss=sl_val)
                         
-                        # Rule: Discard if any subsequent candle closed below SL or touched T1
-                        if candle_a_time and 'date' in df.columns:
-                            subsequent = df[df['date'].astype(str) > candle_a_time]
-                            if not subsequent.empty:
-                                if (subsequent['close'] <= sl_val).any():
-                                    continue
-                                if t1 and (subsequent['high'] >= t1).any():
-                                    continue
+                        # Generic Universal Rule: Discard if any subsequent Anchor TF candle closed below SL or touched T1
+                        if not is_anchor_valid_and_active(df, candle_a_time, sl_val, t1):
+                            continue
                                     
                         risk = round(result["Close"] - sl_val, 2) if (result["Close"] > sl_val) else 0
                         rr = round((t1 - result["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0

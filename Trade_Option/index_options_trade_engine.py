@@ -48,6 +48,7 @@ from trading_core import (
     scan_symbol,
     monitor_active_positions as shared_monitor_positions,
     simulate_trade_outcome as shared_simulate,
+    is_anchor_valid_and_active,
     INDEX_REGISTRY
 )
 
@@ -260,16 +261,7 @@ def run_anchor_scan(kite):
                 candle_a_time = str(result_ce.get("CandleATime") or "")
                 sl_val = result_ce["SL"]
                 t1, t2, t3 = find_profit_targets(df_ce, result_ce["Close"], stop_loss=sl_val)
-                
-                # Rule: Discard if any subsequent candle closed below SL or touched T1
-                valid_ce = True
-                if candle_a_time and 'date' in df_ce.columns:
-                    subsequent = df_ce[df_ce['date'].astype(str) > candle_a_time]
-                    if not subsequent.empty:
-                        if (subsequent['close'] <= sl_val).any() or (t1 and (subsequent['high'] >= t1).any()):
-                            valid_ce = False
-                
-                if valid_ce:
+                if is_anchor_valid_and_active(df_ce, candle_a_time, sl_val, t1):
                     risk = round(result_ce["Close"] - sl_val, 2) if (result_ce["Close"] > sl_val) else 0
                     rr = round((t1 - result_ce["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
                     formed_anchors.append({
@@ -289,16 +281,7 @@ def run_anchor_scan(kite):
                 candle_a_time = str(result_pe.get("CandleATime") or "")
                 sl_val = result_pe["SL"]
                 t1, t2, t3 = find_profit_targets(df_pe, result_pe["Close"], stop_loss=sl_val)
-                
-                # Rule: Discard if any subsequent candle closed below SL or touched T1
-                valid_pe = True
-                if candle_a_time and 'date' in df_pe.columns:
-                    subsequent = df_pe[df_pe['date'].astype(str) > candle_a_time]
-                    if not subsequent.empty:
-                        if (subsequent['close'] <= sl_val).any() or (t1 and (subsequent['high'] >= t1).any()):
-                            valid_pe = False
-                            
-                if valid_pe:
+                if is_anchor_valid_and_active(df_pe, candle_a_time, sl_val, t1):
                     risk = round(result_pe["Close"] - sl_val, 2) if (result_pe["Close"] > sl_val) else 0
                     rr = round((t1 - result_pe["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
                     formed_anchors.append({
