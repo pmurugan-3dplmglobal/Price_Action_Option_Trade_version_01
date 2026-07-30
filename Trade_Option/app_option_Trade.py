@@ -860,14 +860,15 @@ HTML_TEMPLATE = """
 
         async function runNegationAnalysis() {
             const symbol = (document.getElementById('an-symbol') || {}).value || '';
-            const entry = parseFloat((document.getElementById('an-entry') || {}).value || 0);
+            const entryVal = (document.getElementById('an-entry') || {}).value;
+            const entry = entryVal ? parseFloat(entryVal) : 0;
             const tf = (document.getElementById('an-tf') || {}).value || '75min';
             const eng = (document.getElementById('an-engine') || {}).value || 'nifty50';
             const resBox = document.getElementById('analyzer-results');
             const btn = document.getElementById('an-submit-btn');
 
-            if (!symbol || !entry || isNaN(entry) || entry <= 0) {
-                showToast('Please enter a valid Symbol/Contract and Entry Price (> 0)', 'error');
+            if (!symbol) {
+                showToast('Please enter a valid Symbol or Contract name (e.g. WIPRO26AUG200CE or VEDL)', 'error');
                 return;
             }
 
@@ -2622,8 +2623,8 @@ def api_analyze_trade():
         timeframe = str(data.get("timeframe", "75min")).strip()
         engine = str(data.get("engine", "nifty50")).strip()
         
-        if not symbol or entry_price <= 0:
-            return jsonify({"ok": False, "error": "Valid Symbol and Entry Price (> 0) required"}), 400
+        if not symbol:
+            return jsonify({"ok": False, "error": "Valid Symbol or Contract Name required"}), 400
 
         kite = None
         try:
@@ -2634,26 +2635,28 @@ def api_analyze_trade():
 
         analysis = derive_sl_targets_for_contract(kite, symbol, entry_price, timeframe, timeframe)
         if not analysis:
-            sl_val = round(entry_price * 0.90, 2)
+            sl_val = round(entry_price * 0.90, 2) if entry_price > 0 else 0.0
             analysis = {
+                "entry_price": entry_price,
                 "current_sl": sl_val,
                 "t1": None, "t2": None, "t3": None,
                 "pattern": "NEGATION_ESTIMATED"
             }
 
-        sl_val = analysis.get("current_sl", round(entry_price * 0.90, 2))
+        resolved_entry = float(analysis.get("entry_price") or entry_price or 0.0)
+        sl_val = analysis.get("current_sl", round(resolved_entry * 0.90, 2) if resolved_entry > 0 else 0.0)
         t1_val = analysis.get("t1")
         t2_val = analysis.get("t2")
         t3_val = analysis.get("t3")
         
-        risk = (entry_price - sl_val) if sl_val < entry_price else 0
-        rr = round((t1_val - entry_price) / risk, 2) if (t1_val and risk > 0) else 0.0
+        risk = (resolved_entry - sl_val) if (resolved_entry > 0 and sl_val < resolved_entry) else 0
+        rr = round((t1_val - resolved_entry) / risk, 2) if (t1_val and risk > 0) else 0.0
 
         return jsonify({
             "ok": True,
             "symbol": symbol,
             "contract": symbol,
-            "entry_price": entry_price,
+            "entry_price": resolved_entry,
             "current_sl": sl_val,
             "t1": t1_val if t1_val else "N/A",
             "t2": t2_val if t2_val else "N/A",

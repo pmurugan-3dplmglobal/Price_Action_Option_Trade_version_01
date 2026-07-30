@@ -1345,6 +1345,7 @@ def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry=
                 t3 = round(ep + (3.50 * risk), 2)
 
         return {
+            "entry_price": round(ep, 2) if ep else 0.0,
             "current_sl": sl_val,
             "t1": t1,
             "t2": t2,
@@ -1358,6 +1359,7 @@ def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry=
             sl_val = round(ep * 0.90, 2)
             risk = round(ep - sl_val, 2)
             return {
+                "entry_price": round(ep, 2),
                 "current_sl": sl_val,
                 "t1": round(ep + 1.88 * risk, 2),
                 "t2": round(ep + 2.50 * risk, 2),
