@@ -2635,7 +2635,10 @@ def api_analyze_trade():
         except Exception:
             kite = None
 
-        analysis = derive_sl_targets_for_contract(kite, symbol, entry_price, timeframe, timeframe)
+        timeframe_entry = "15minute" if timeframe in ["15minute", "75min", "60minute"] else timeframe
+        timeframe_anchor = "75min" if timeframe in ["15minute", "75min"] else ("60minute" if timeframe == "60minute" else timeframe)
+
+        analysis = derive_sl_targets_for_contract(kite, symbol, entry_price, timeframe_entry, timeframe_anchor)
         if not analysis:
             sl_val = round(entry_price * 0.90, 2) if entry_price > 0 else 0.0
             analysis = {

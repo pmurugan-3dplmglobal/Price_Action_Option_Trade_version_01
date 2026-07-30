@@ -2598,7 +2598,7 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
         entry_close = float(entry_candle['close'])
         sl_val = round(a_high + max(0.50, a_high * 0.02), 2)
 
-        t1, t2, t3 = find_profit_targets_bearish(df_entry, entry_close, stop_loss=sl_val)
+        t1, t2, t3 = find_profit_targets_bearish(df_anchor, entry_close, stop_loss=sl_val)
         if not t1 or t1 >= entry_close:
             t1 = round(entry_close - max(1.5 * abs(sl_val - entry_close), entry_close * 0.05), 2)
 
