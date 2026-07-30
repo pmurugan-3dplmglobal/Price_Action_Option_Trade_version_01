@@ -1263,7 +1263,7 @@ def sync_kite_positions(kite, registry, positions_dict, lock, engine, timeframe_
     except Exception as e:
         logging.warning(f"Kite position sync failed: {e}")
 
-def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry="15minute", timeframe_anchor="30minute"):
+def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry="30minute", timeframe_anchor="30minute"):
     """
     Derive SL and Targets for a specific contract.
     - Targets are derived strictly from Negation Theory (find_profit_targets non-negated swing high levels).

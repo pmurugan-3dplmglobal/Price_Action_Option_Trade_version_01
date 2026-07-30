@@ -2061,6 +2061,7 @@ HTML_TEMPLATE = """
                             <div>
                                 <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:4px;">Timeframe</label>
                                 <select id="an-tf" style="width:100%;padding:8px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;font-size:12px;">
+                                    <option value="30minute" selected>30min (Same Entry & Anchor TF)</option>
                                     <option value="75min">75min (Anchor TF)</option>
                                     <option value="60minute">60min (Anchor TF)</option>
                                     <option value="15minute">15min (Entry TF)</option>
@@ -2635,8 +2636,12 @@ def api_analyze_trade():
         except Exception:
             kite = None
 
-        timeframe_entry = "15minute" if timeframe in ["15minute", "75min", "60minute"] else timeframe
-        timeframe_anchor = "75min" if timeframe in ["15minute", "75min"] else ("60minute" if timeframe == "60minute" else timeframe)
+        if timeframe == "30minute":
+            timeframe_entry = "30minute"
+            timeframe_anchor = "30minute"
+        else:
+            timeframe_entry = "15minute" if timeframe in ["15minute", "75min", "60minute"] else timeframe
+            timeframe_anchor = "75min" if timeframe in ["15minute", "75min"] else ("60minute" if timeframe == "60minute" else timeframe)
 
         analysis = derive_sl_targets_for_contract(kite, symbol, entry_price, timeframe_entry, timeframe_anchor)
         if not analysis:
