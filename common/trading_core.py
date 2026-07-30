@@ -1722,6 +1722,49 @@ def is_setup_already_completed(df_candles, candle_time, t1_target, sl_target):
     """Return True if setup was completed or invalidated."""
     return not is_anchor_valid_and_active(df_candles, candle_time, sl_target, t1_target)
 
+def find_newest_valid_anchor(df):
+    """
+    Scans `df` (Anchor TF candles) starting from the NEWEST candle going backwards.
+    Finds the first (newest) valid Anchor pattern where:
+    1. Pattern detector matches an Anchor (LL Sweep, Engulfing, Baby Candle, Harami, Two HH).
+    2. No subsequent candle in `df` closed below SL (closing basis).
+    3. No subsequent candle in `df` touched T1 (high >= T1).
+    Returns the newest valid anchor dict (with T1, T2, T3, RR), or None.
+    """
+    if df is None or len(df) < 5:
+        return None
+
+    scanners = [
+        find_anchor_ll_sweep,
+        find_anchor_bullish_engulfing,
+        find_anchor_hammer_baby,
+        find_anchor_bullish_harami,
+        find_anchor_two_higher_highs,
+    ]
+
+    for end_idx in range(len(df), 4, -1):
+        sub_df = df.iloc[:end_idx]
+        for scanner_func in scanners:
+            result = scanner_func(sub_df)
+            if result:
+                candle_a_time = str(result.get("CandleATime") or "")
+                sl_val = result["SL"]
+                t1, t2, t3 = find_profit_targets(df, result["Close"], stop_loss=sl_val)
+                
+                # Check validity on all subsequent candles in the full dataframe
+                if is_anchor_valid_and_active(df, candle_a_time, sl_val, t1):
+                    risk = round(result["Close"] - sl_val, 2) if (result["Close"] > sl_val) else 0.0
+                    rr = round((t1 - result["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
+                    return {
+                        "Pattern": result["Pattern"],
+                        "Close": result["Close"],
+                        "SL": sl_val,
+                        "T1": t1, "T2": t2, "T3": t3,
+                        "RR": rr,
+                        "CandleATime": candle_a_time
+                    }
+    return None
+
 def safe_kite_call(func, *args, retries=3, delay=0.8, **kwargs):
     for attempt in range(retries):
         try:

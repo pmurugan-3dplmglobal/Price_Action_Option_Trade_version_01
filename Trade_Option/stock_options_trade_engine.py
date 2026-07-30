@@ -48,6 +48,7 @@ from trading_core import (
     monitor_active_positions as shared_monitor_positions,
     simulate_trade_outcome as shared_simulate,
     is_anchor_valid_and_active,
+    find_newest_valid_anchor,
     STOCK_REGISTRY,
     SUPER_STOCKS
 )
@@ -458,37 +459,25 @@ def run_anchor_scan(kite):
                     continue
                 if df.empty:
                     continue
-                for name, scanner_func in scanners:
-                    result = scanner_func(df)
-                    if result:
-                        candle_a_time = str(result.get("CandleATime") or "")
-                        sl_val = result["SL"]
-                        t1, t2, t3 = find_profit_targets(df, result["Close"], stop_loss=sl_val)
-                        
-                        # Generic Universal Rule: Discard if any subsequent Anchor TF candle closed below SL or touched T1
-                        if not is_anchor_valid_and_active(df, candle_a_time, sl_val, t1):
-                            continue
-                                    
-                        risk = round(result["Close"] - sl_val, 2) if (result["Close"] > sl_val) else 0
-                        rr = round((t1 - result["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
-                        anchor_item = {
-                            "symbol": symbol,
-                            "contract": symbol,
-                            "entry_spot": result["Close"],
-                            "current_sl": sl_val,
-                            "t1": t1, "t2": t2, "t3": t3,
-                            "rr": rr,
-                            "pattern": result["Pattern"],
-                            "timeframe": TIMEFRAME_ANCHOR,
-                            "side": "CE",
-                            "entry_time": candle_a_time
-                        }
-                        formed_anchors.append(anchor_item)
-                        logging.info(f"ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
-                        log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
-                                       "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
-                                        entry=result["Close"], sl=sl_val, target=t1 or "")
-                        break
+                valid_anchor = find_newest_valid_anchor(df)
+                if valid_anchor:
+                    anchor_item = {
+                        "symbol": symbol,
+                        "contract": symbol,
+                        "entry_spot": valid_anchor["Close"],
+                        "current_sl": valid_anchor["SL"],
+                        "t1": valid_anchor["T1"], "t2": valid_anchor["T2"], "t3": valid_anchor["T3"],
+                        "rr": valid_anchor["RR"],
+                        "pattern": valid_anchor["Pattern"],
+                        "timeframe": TIMEFRAME_ANCHOR,
+                        "side": "CE",
+                        "entry_time": valid_anchor["CandleATime"]
+                    }
+                    formed_anchors.append(anchor_item)
+                    logging.info(f"ANCHOR MATCH: {symbol} | {valid_anchor['Pattern']} | Close: {valid_anchor['Close']}")
+                    log_to_journal(symbol, valid_anchor["Pattern"], TIMEFRAME_ANCHOR,
+                                   "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
+                                    entry=valid_anchor["Close"], sl=valid_anchor["SL"], target=valid_anchor["T1"] or "")
         time.sleep(1)
     logging.info(f"Anchor scan complete: found {len(formed_anchors)} formed patterns")
     if formed_anchors:
