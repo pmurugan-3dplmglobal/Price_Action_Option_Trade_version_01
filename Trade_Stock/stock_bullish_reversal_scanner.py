@@ -27,8 +27,9 @@ position_lock = threading.Lock()
 ANCHOR_SCAN_REQUEST_FILE = os.path.join("output", "monitor", "anchor_scan_request.txt")
 ANCHOR_SCAN_STOP_FILE = os.path.join("output", "monitor", "anchor_scan_stop.txt")
 
-journal_lock = threading.Lock()
-JOURNAL_FILE = "output/monitor/trade_journal.csv"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCAN_DISPLAY_FILE = os.path.join(BASE_DIR, "output", "monitor", "scan_display_data.json")
+JOURNAL_FILE = os.path.join(BASE_DIR, "output", "monitor", "trade_journal.csv")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,6 +53,8 @@ from trading_core import (
     resample_timeframe,
     sync_stock_tokens,
     fetch_and_resample_candles,
+    write_scan_display_data as shared_write_display,
+    clean_timestamp,
     STOCK_REGISTRY,
     SUPER_STOCKS
 )
@@ -101,7 +104,7 @@ def run_scan(kite):
     else:
         fetch_tf = "day"
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {}
         for symbol in scan_order:
             config = STOCK_REGISTRY[symbol]
@@ -145,11 +148,52 @@ def run_scan(kite):
                                    f"Entry={result['Close']:.2f} SL={result['SL']:.2f} RR={result['RR']:.2f}",
                                    entry=result['Close'], sl=result['SL'],
                                    target=result.get('T3',''), rr=result['RR'])
+                    c_time = clean_timestamp(result.get("CandleATime") or result.get("CandleTime") or dt.now().strftime("%Y-%m-%d %H:%M"))
+                    with position_lock:
+                        all_disp = [r for r in results if r.get("Pattern") and r.get("Pattern") not in ["NO_MATCH", "ERROR", "NO_DATA"]]
+                        formatted_all = [{
+                            "symbol": r.get("Symbol") or r.get("symbol", ""),
+                            "contract": r.get("Symbol") or r.get("symbol", ""),
+                            "entry_spot": r.get("Close"),
+                            "current_sl": r.get("SL"),
+                            "t1": r.get("T1"),
+                            "t2": r.get("T2"),
+                            "t3": r.get("T3"),
+                            "rr": r.get("RR", 0.0),
+                            "pattern": r.get("Pattern"),
+                            "timeframe": TIMEFRAME_ENTRY,
+                            "side": "CE",
+                            "entry_time": clean_timestamp(r.get("CandleATime") or r.get("CandleTime")),
+                            "candle_a_time": clean_timestamp(r.get("CandleATime") or r.get("CandleTime"))
+                        } for r in all_disp if r.get("Symbol") or r.get("symbol")]
+                        shared_write_display(formatted_all, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
                     matched = True
                     break
             if not matched:
                 with results_lock:
                     results.append({"Symbol": symbol, "Pattern": "NO_MATCH"})
+    formed_display = []
+    for r in results:
+        if r.get("Pattern") and r.get("Pattern") not in ["NO_MATCH", "ERROR", "NO_DATA"]:
+            c_time = clean_timestamp(r.get("CandleATime") or r.get("CandleTime") or r.get("Scan_Date"))
+            formed_display.append({
+                "symbol": r.get("Symbol"),
+                "contract": r.get("Symbol"),
+                "entry_spot": r.get("Close"),
+                "current_sl": r.get("SL"),
+                "t1": r.get("T1"),
+                "t2": r.get("T2"),
+                "t3": r.get("T3"),
+                "rr": r.get("RR", 0.0),
+                "pattern": r.get("Pattern"),
+                "timeframe": TIMEFRAME_ENTRY,
+                "side": "CE",
+                "entry_time": c_time,
+                "candle_a_time": c_time
+            })
+    if formed_display:
+        with position_lock:
+            shared_write_display(formed_display, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
     return results
 
 def export_results(results):
