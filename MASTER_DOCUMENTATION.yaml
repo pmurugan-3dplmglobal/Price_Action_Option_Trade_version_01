@@ -35,11 +35,13 @@ architecture:
       trade_db.py: "Thread-safe JSON trade database, cycle staging, and executed pattern deduplication"
       Kite_Access_Token_gen.py: "Zerodha Kite OAuth access token generator CLI"
     Trade_Option:
-      app_option_Trade.py: "Options Dashboard (port 5050)"
-      index_options_trade_engine.py: "Intraday index options engine (NIFTY, BANKNIFTY, SENSEX)"
+      app_option_Trade.py: "Options Dashboard (port 5050) with 1-Click BUY button on Scan Tab (/api/buy-scanned-trade)"
+      index_options_trade_engine.py: "Intraday index options engine (NIFTY, BANKNIFTY, SENSEX with BFO exchange routing)"
       stock_options_trade_engine.py: "Nifty 50 stock options scanner & executor"
+      automated_strategy_exporter.py: "Plan 1 Multi-Timeframe Automated Daily Exporter (Index: 3m/5m/15m, Stock Option: 15m/60m)"
+      run_export_scheduler_daemon.py: "Background Scheduler Daemon for 10:30 AM, 1:00 PM, and 3:15 PM exports"
     Trade_Stock:
-      app_Sock_Trade.py: "Stock Trade Dashboard (port 5051)"
+      app_Sock_Trade.py: "Stock Trade Dashboard (port 5051) with 1-Click BUY button on Scan Tab (/api/buy-scanned-trade)"
       stock_bullish_reversal_scanner.py: "Stock Bullish Reversal Scanner & Exporter"
       stock_bearish_reversal_scanner.py: "Stock Bearish Reversal Scanner & Exporter"
     backtest:

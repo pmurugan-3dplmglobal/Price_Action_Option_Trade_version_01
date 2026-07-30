@@ -1050,13 +1050,7 @@ def close_position(kite, pos, live_market=True, product=None):
     contract = pos.get("contract") or pos.get("tradingsymbol")
     if not contract:
         return
-    if is_contract_exit_executed(contract):
-        prev = EXECUTED_EXITS.get(contract, {})
-        logging.info(f"[EXIT GUARD BLOCK] {contract} exit order already submitted (Order ID: {prev.get('order_id')}). Skipping duplicate exit call.")
-        return
-    if not live_market:
-        logging.info(f"[BACKTEST EXIT] {contract}")
-        return
+    
     target_product = product
     try:
         if not target_product:
@@ -1069,35 +1063,83 @@ def close_position(kite, pos, live_market=True, product=None):
         logging.warning(f"Could not fetch Kite position product for {contract}: {e}")
     if not target_product:
         target_product = pos.get("product") or kite.PRODUCT_NRML
+
+    c_str = str(contract).upper()
+    if "SENSEX" in c_str or "BSE" in c_str:
+        target_exch = "BFO"
+    elif "CE" in c_str or "PE" in c_str or "NIFTY" in c_str or "BANK" in c_str:
+        target_exch = "NFO"
+    else:
+        target_exch = "NSE"
+
+    qty = pos.get("quantity") or (get_option_lot_size(contract) or pos.get("lot_size", 1)) * pos.get("position_size", 1)
+
+    if is_contract_exit_executed(contract):
+        prev = EXECUTED_EXITS.get(contract, {})
+        oid = prev.get("order_id")
+        if oid and kite and live_market:
+            try:
+                orders = kite.orders()
+                for o in orders:
+                    if str(o.get("order_id")) == str(oid) and o.get("status") in ["OPEN", "TRIGGER PENDING"]:
+                        logging.warning(f"[PENDING LIMIT EXIT DETECTED] Order {oid} for {contract} is OPEN/UNFILLED. Cancelling limit order and executing MARKET exit fallback...")
+                        try:
+                            kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=oid)
+                        except Exception as c_err:
+                            logging.warning(f"Could not cancel pending order {oid}: {c_err}")
+                        
+                        m_oid = kite.place_order(
+                            variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
+                            exchange=target_exch, transaction_type=kite.TRANSACTION_TYPE_SELL,
+                            quantity=qty, order_type=kite.ORDER_TYPE_MARKET,
+                            product=target_product
+                        )
+                        save_executed_exit(contract, m_oid, {"type": "MARKET_FALLBACK", "qty": qty})
+                        logging.info(f"Fallback MARKET exit SUCCESS for {contract} on exchange {target_exch} (Order ID: {m_oid})")
+                        return
+            except Exception as check_err:
+                logging.debug(f"Could not verify exit order status for {contract}: {check_err}")
+        logging.info(f"[EXIT GUARD BLOCK] {contract} exit order already submitted (Order ID: {prev.get('order_id')}). Skipping duplicate exit call.")
+        return
+
+    if not live_market:
+        logging.info(f"[BACKTEST EXIT] {contract}")
+        return
+
     try:
-        q = kite.quote(f"{kite.EXCHANGE_NFO}:{contract}")
-        ltp = q[f"{kite.EXCHANGE_NFO}:{contract}"]["last_price"]
-        bid = q[f"{kite.EXCHANGE_NFO}:{contract}"]["depth"]["buy"][0]["price"]
+        q_key = f"{target_exch}:{contract}"
+        q = kite.quote([q_key])
+        ltp = q.get(q_key, {}).get("last_price", 0)
+        bid = 0
+        depth = q.get(q_key, {}).get("depth", {}).get("buy", [])
+        if depth and len(depth) > 0:
+            bid = float(depth[0].get("price", 0))
         raw_price = (bid if bid > 0 else ltp) * 0.995
         price = round(round(raw_price / 0.05) * 0.05, 2)
-        qty = pos.get("quantity") or (get_option_lot_size(contract) or pos.get("lot_size", 1)) * pos.get("position_size", 1)
         try:
             oid = kite.place_order(
                 variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
-                exchange=kite.EXCHANGE_NFO, transaction_type=kite.TRANSACTION_TYPE_SELL,
+                exchange=target_exch, transaction_type=kite.TRANSACTION_TYPE_SELL,
                 quantity=qty, order_type=kite.ORDER_TYPE_LIMIT,
                 price=price, product=target_product
             )
             save_executed_exit(contract, oid, {"type": "LIMIT", "price": price, "qty": qty})
-            logging.info(f"Closed {contract} with LIMIT order price {price} (Order ID: {oid})")
+            logging.info(f"Closed {contract} with LIMIT order price {price} on exchange {target_exch} (Order ID: {oid})")
         except Exception as primary_err:
-            logging.warning(f"Primary LIMIT exit with {target_product} failed for {contract}: {primary_err}. Retrying with MARKET order...")
+            logging.warning(f"Primary LIMIT exit with {target_product} on {target_exch} failed for {contract}: {primary_err}. Retrying with MARKET order...")
             try:
                 oid = kite.place_order(
                     variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
-                    exchange=kite.EXCHANGE_NFO, transaction_type=kite.TRANSACTION_TYPE_SELL,
+                    exchange=target_exch, transaction_type=kite.TRANSACTION_TYPE_SELL,
                     quantity=qty, order_type=kite.ORDER_TYPE_MARKET,
                     product=target_product
                 )
-                logging.info(f"Fallback MARKET exit SUCCESS for {contract} with product {target_product}")
+                save_executed_exit(contract, oid, {"type": "MARKET", "price": ltp, "qty": qty})
+                logging.info(f"Fallback MARKET exit SUCCESS for {contract} on exchange {target_exch} with product {target_product}")
             except Exception as m_err:
                 logging.error(f"Fallback MARKET exit failed for {contract}: {m_err}")
     except Exception as e:
+        logging.error(f"Exit failed for {contract}: {e}")
         logging.error(f"Exit failed for {contract}: {e}")
 
 def load_program_config_for_engine(cfg_section, extra_fields=None):
@@ -1199,38 +1241,106 @@ def sync_kite_positions(kite, registry, positions_dict, lock, engine, timeframe_
         logging.warning(f"Kite position sync failed: {e}")
 
 def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry="15minute", timeframe_anchor="15minute"):
-    """Derive SL and Targets for a specific contract using Negation Theory on historical candles."""
+    """
+    Derive SL and Targets for a specific contract.
+    - Targets are derived strictly from Negation Theory (find_profit_targets non-negated swing high levels).
+    - SL Exception for Manual Entries: If pattern SL is looser than 10% or missing, SL is set to Entry_Price * 0.90 (10% max loss).
+    """
     try:
         ref_now = dt.now()
         from_d = (ref_now - timedelta(days=5)).strftime("%Y-%m-%d")
         to_d = ref_now.strftime("%Y-%m-%d")
-        exch = "NFO" if ("CE" in contract or "PE" in contract or "NIFTY" in contract or "BANK" in contract) else "NSE"
+        
+        contract_str = str(contract).upper()
+        if "SENSEX" in contract_str or "BSE" in contract_str:
+            exch = "BFO"
+        elif "CE" in contract_str or "PE" in contract_str or "NIFTY" in contract_str or "BANK" in contract_str:
+            exch = "NFO"
+        else:
+            exch = "NSE"
+            
         quote_key = f"{exch}:{contract}"
-        q = kite.quote([quote_key])
-        token = q.get(quote_key, {}).get("instrument_token")
-        if not token:
-            return None
-        df_e = fetch_and_resample_candles(kite, token, from_d, to_d, timeframe_entry)
-        df_a = fetch_and_resample_candles(kite, token, from_d, to_d, timeframe_anchor)
-        if len(df_a) < 5:
-            return None
-        res = scan_anchor_bcd_breakout(df_e, df_a)
-        if res:
-            return {"current_sl": res["SL"], "t1": res["T1"], "t2": res["T2"], "t3": res["T3"], "pattern": res["Pattern"]}
-        anchor_low = float(df_a.iloc[-10:]['low'].min())
-        curr_price = float(df_a.iloc[-1]['close']) if len(df_a) else 0
-        ep = entry_price if (entry_price and entry_price > 0) else curr_price
-        sl_val = round(anchor_low - max(0.50, anchor_low * 0.02), 2)
-        if ep > 0 and sl_val >= ep:
-            sl_val = round(ep * 0.95, 2)
-        t1, t2, t3 = find_profit_targets(df_a, ep, stop_loss=sl_val)
-        if t1 is None:
-            t1 = round(ep * 1.05, 2) if ep > 0 else None
-            t2 = round(ep * 1.10, 2) if ep > 0 else None
-            t3 = round(ep * 1.20, 2) if ep > 0 else None
-        return {"current_sl": sl_val, "t1": t1, "t2": t2, "t3": t3, "pattern": "NEGATION_DERIVED"}
+        ep = float(entry_price) if (entry_price and float(entry_price) > 0) else 0.0
+        max_loss_sl = round(ep * 0.90, 2) if ep > 0 else 0.0
+
+        token = None
+        if kite:
+            try:
+                q = kite.quote([quote_key])
+                token = q.get(quote_key, {}).get("instrument_token")
+                if not ep:
+                    ep = float(q.get(quote_key, {}).get("last_price", 0))
+                    max_loss_sl = round(ep * 0.90, 2) if ep > 0 else 0.0
+            except Exception as q_err:
+                logging.warning(f"Kite quote error for {quote_key}: {q_err}")
+
+        df_e, df_a = None, None
+        if kite and token:
+            try:
+                df_e = fetch_and_resample_candles(kite, token, from_d, to_d, timeframe_entry)
+                df_a = fetch_and_resample_candles(kite, token, from_d, to_d, timeframe_anchor)
+            except Exception as fetch_err:
+                logging.warning(f"Candle fetch error for {contract}: {fetch_err}")
+
+        sl_val = None
+        t1, t2, t3 = None, None, None
+        pattern_name = "NEGATION_DERIVED_MANUAL"
+
+        if df_a is not None and len(df_a) >= 5:
+            res = scan_anchor_bcd_breakout(df_e if df_e is not None else df_a, df_a)
+            if res:
+                pattern_name = res.get("Pattern", "ABC_BREAKOUT")
+                pattern_sl = float(res["SL"])
+                if ep > 0:
+                    sl_val = max(pattern_sl, max_loss_sl) if pattern_sl < ep else max_loss_sl
+                else:
+                    sl_val = pattern_sl
+            else:
+                anchor_low = float(df_a.iloc[-10:]['low'].min())
+                swing_sl = round(anchor_low - max(0.50, anchor_low * 0.02), 2)
+                if ep > 0:
+                    sl_val = max(swing_sl, max_loss_sl) if (swing_sl > 0 and swing_sl < ep) else max_loss_sl
+                else:
+                    sl_val = swing_sl
+                pattern_name = "TIMEFRAME_SWING_MANUAL"
+
+            # Always derive Targets via Negation Theory on df_a!
+            t1, t2, t3 = find_profit_targets(df_a, ep if ep > 0 else float(df_a.iloc[-1]['close']), stop_loss=sl_val)
+
+        # Fallback for SL if missing
+        if sl_val is None or sl_val <= 0 or (ep > 0 and sl_val >= ep):
+            sl_val = max_loss_sl if max_loss_sl > 0 else (round(ep * 0.90, 2) if ep > 0 else 0.0)
+
+        # Fallback for Targets if Negation Theory targets are missing or unreached
+        if ep > 0 and sl_val > 0 and sl_val < ep:
+            risk = round(ep - sl_val, 2)
+            if t1 is None or t1 <= ep:
+                t1 = round(ep + (1.88 * risk), 2)
+            if t2 is None or t2 <= ep:
+                t2 = round(ep + (2.50 * risk), 2)
+            if t3 is None or t3 <= ep:
+                t3 = round(ep + (3.50 * risk), 2)
+
+        return {
+            "current_sl": sl_val,
+            "t1": t1,
+            "t2": t2,
+            "t3": t3,
+            "pattern": pattern_name
+        }
     except Exception as e:
         logging.warning(f"Derive contract SL/Target failed for {contract}: {e}")
+        if entry_price and float(entry_price) > 0:
+            ep = float(entry_price)
+            sl_val = round(ep * 0.90, 2)
+            risk = round(ep - sl_val, 2)
+            return {
+                "current_sl": sl_val,
+                "t1": round(ep + 1.88 * risk, 2),
+                "t2": round(ep + 2.50 * risk, 2),
+                "t3": round(ep + 3.50 * risk, 2),
+                "pattern": "FALLBACK_10PCT_MANUAL"
+            }
         return None
 
 def lookup_scan_sl_target(contract, symbol, engine, kite=None, entry_price=0, timeframe_entry="15minute", timeframe_anchor="15minute", entry_date=None, is_stock=False):

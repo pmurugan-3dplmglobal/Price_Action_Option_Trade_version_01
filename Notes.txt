@@ -1,2 +1,13 @@
 Don't make any change directly lets discuss (add any point/idea ) finally we can implement
 Read :DOCUMENTATION.yaml/DOCUMENTATION_STOCK.yaml for understanding 
+
+
+New plan :
+
+1) Our code when enabled for live trade it should follow below rules 
+
+we alread run 2 engine , Lets take example as Index trade Engine 
+
+it find the contract based on our pattern wee have 5 pattern
+
+i want to run one cycle all pattern on each symbol to find latest Ancher  +BCD Pattern 

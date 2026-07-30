@@ -210,12 +210,22 @@ def check_token_valid():
         if date_str:
             try:
                 from datetime import datetime as dt2
-                gen_date = dt2.strptime(date_str.split()[0], "%Y-%m-%d").date()
-                today = dt.now().date()
+                gen_dt = dt2.strptime(date_str, "%Y-%m-%d %H:%M:%S")
+                now_dt = dt.now()
+                gen_date = gen_dt.date()
+                today = now_dt.date()
                 if gen_date < today:
                     return {"valid": False, "reason": f"Token expired (generated {date_str})"}
+                reset_cutoff = gen_dt.replace(hour=6, minute=0, second=0, microsecond=0)
+                if gen_dt < reset_cutoff and now_dt >= reset_cutoff:
+                    return {"valid": False, "reason": f"Token expired (generated {date_str} before 06:00 AM Zerodha reset)"}
             except Exception:
-                pass
+                try:
+                    gen_date = dt.strptime(date_str.split()[0], "%Y-%m-%d").date()
+                    if gen_date < dt.now().date():
+                        return {"valid": False, "reason": f"Token expired (generated {date_str})"}
+                except Exception:
+                    pass
         return {"valid": True, "reason": "Token valid"}
     except Exception as e:
         return {"valid": False, "reason": f"Token read error: {e}"}
@@ -365,9 +375,14 @@ def refresh_data():
             market_open = now_ist.replace(hour=9, minute=0, second=0, microsecond=0)
             if _last_scan_reset != today_str and now_ist >= market_open:
                 _last_scan_reset = today_str
-                empty_scan = {"date": today_str, "timestamp": now_ist.strftime("%Y-%m-%d %H:%M:%S"), "staged_trades": [], "carry_forward": [], "active_live": []}
                 for f in [SCAN_DISPLAY_FILE, SCAN_DISPLAY_INDEX_FILE]:
                     try:
+                        if os.path.exists(f):
+                            with open(f, "r") as fh:
+                                existing = json.load(fh)
+                            if existing.get("date") == today_str and existing.get("staged_trades"):
+                                continue  # Keep today's existing scan display data intact
+                        empty_scan = {"date": today_str, "timestamp": now_ist.strftime("%Y-%m-%d %H:%M:%S"), "staged_trades": [], "carry_forward": [], "active_live": []}
                         with open(f, "w") as fh:
                             json.dump(empty_scan, fh)
                     except Exception:
@@ -481,12 +496,29 @@ def refresh_data():
                                 t3_val = float(scan_sl.get("t3", 0))
 
                                 clean_sym = str(sym).replace(" ", "").upper()
+
+                                sl_buffered = round(sl_val * 0.995, 2)
+                                is_below_buffer = ltp_val <= sl_buffered
+                                is_deep_break = ltp_val <= round(sl_val * 0.985, 2)
+
+                                prev_closed_below = False
+                                token_id = scan_sl.get("option_token") or scan_sl.get("index_token") or scan_sl.get("token")
+                                if token_id and _kite_session:
+                                    try:
+                                        df_hist = fetch_and_resample_candles(_kite_session, token_id, (dt.now() - timedelta(days=2)).strftime("%Y-%m-%d"), dt.now().strftime("%Y-%m-%d"), "15minute")
+                                        if len(df_hist) >= 2:
+                                            prev_close_val = float(df_hist.iloc[-2]["close"])
+                                            if prev_close_val > 0 and prev_close_val <= sl_val:
+                                                prev_closed_below = True
+                                    except Exception:
+                                        pass
+
                                 # TASK 1: Pause automated exit execution if user is actively editing this symbol on the UI
                                 if clean_sym in ACTIVE_EDIT_LOCKS:
                                     logging.info(f"[FAILSAFE PAUSED] {sym} is currently being edited on UI. Automated exit execution paused.")
-                                # TASK 2: Only execute exit if SL > 0 (valid SL assigned via auto-fill or manual fill)
-                                elif ltp_val > 0 and sl_val > 0 and ltp_val <= sl_val:
-                                    logging.warning(f"[FAILSAFE MONITOR EXIT SL] {sym} LTP={ltp_val} <= SL={sl_val}")
+                                # TASK 2: Execute SL exit ONLY IF below 0.5% buffer AND (previous candle closed below SL OR emergency deep break)
+                                elif ltp_val > 0 and sl_val > 0 and is_below_buffer and (prev_closed_below or is_deep_break):
+                                    logging.warning(f"[FAILSAFE MONITOR EXIT SL CONFIRMED] {sym} LTP={ltp_val} <= Buffered SL={sl_buffered} (Prev Close Below: {prev_closed_below}, Deep Break: {is_deep_break})")
                                     pos_obj = {"contract": sym, "position_size": qty, "quantity": qty, "symbol": sym}
                                     shared_close_stock_position(_kite_session, pos_obj, True, p.get("product"))
                                 elif ltp_val > 0 and t3_val > 0 and ltp_val >= t3_val:
@@ -692,7 +724,13 @@ HTML_TEMPLATE = """
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'scan_export.csv';
+                const now = new Date();
+                const pad = n => String(n).padStart(2, '0');
+                const dd = pad(now.getDate());
+                const mm = pad(now.getMonth() + 1);
+                const yy = String(now.getFullYear()).slice(-2);
+                const hhmin = pad(now.getHours()) + pad(now.getMinutes());
+                a.download = `scan_export_${dd}_${mm}_${yy}_${hhmin}.csv`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -751,6 +789,42 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function buyScannedTrade(btnEl, symbol, contract, side, entry, sl, t1, t2, t3, engine) {
+            const dispName = contract || symbol;
+            if (!confirm(`Confirm 1-Click BUY for ${dispName}?`)) return;
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.textContent = 'BUYING...';
+                btnEl.style.background = '#8b949e';
+            }
+            try {
+                const r = await fetch('/api/buy-scanned-trade', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({symbol, contract, side, entry_spot: entry, current_sl: sl, t1, t2, t3, engine})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    showToast(d.message || `BUY order placed for ${dispName}`, 'success');
+                    setTimeout(refreshData, 500);
+                } else {
+                    showToast(`Failed: ${d.error || 'unknown error'}`, 'error');
+                    if (btnEl) {
+                        btnEl.disabled = false;
+                        btnEl.textContent = 'BUY';
+                        btnEl.style.background = '#2ea043';
+                    }
+                }
+            } catch(e) {
+                showToast(`Network error: ${e.message}`, 'error');
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.textContent = 'BUY';
+                    btnEl.style.background = '#2ea043';
+                }
+            }
+        }
+
         let editStates = {};
         window._isEditing = false;
         function renderScanTab(force=false) {
@@ -758,10 +832,22 @@ HTML_TEMPLATE = """
             const d = window._lastData;
             if (!d) return;
             const sd = d.scan_display || {};
+            const activeContracts = new Set();
+            (d.kite_positions || []).forEach(p => {
+                const c = (p.contract || p.symbol || '').replace(/\s+/g, '').toUpperCase();
+                if (c) activeContracts.add(c);
+            });
+            (d.all_trades || []).forEach(t => {
+                if ((t.status || '').toLowerCase() === 'active') {
+                    const c = (t.contract || t.symbol || '').replace(/\s+/g, '').toUpperCase();
+                    if (c) activeContracts.add(c);
+                }
+            });
+
             const filter = (document.getElementById('scan-engine-filter') || {}).value || 'all';
             let scanHtml = '';
-            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">AncherT</th><th onclick="sortTable(this,9)">EntryTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th>';
-            function tradeRow(t, resultBadge) {
+            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">AncherT</th><th onclick="sortTable(this,9)">EntryTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th><th style="text-align:center">Action</th>';
+            function tradeRow(t, resultBadge, eng) {
                 const entry = t.entry_spot !== undefined && t.entry_spot !== null ? parseFloat(t.entry_spot).toFixed(2) : '-';
                 const sl = t.current_sl !== undefined && t.current_sl !== null ? parseFloat(t.current_sl).toFixed(2) : '-';
                 const t1v = t.t1 !== undefined && t.t1 !== null ? t.t1 : '-';
@@ -800,7 +886,19 @@ HTML_TEMPLATE = """
                 else if (res === 'SCAN_READY') res = 'BULL_ENG';
                 const cf = t.carry_forward ? 'Yes' : 'No';
                 const rr = t.rr !== undefined && t.rr !== null ? parseFloat(t.rr).toFixed(2) : '0.00';
-                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td></tr>`;
+
+                const cleanContract = (t.contract || t.symbol || '').replace(/\s+/g, '').toUpperCase();
+                const cleanSymbol = (t.symbol || '').replace(/\s+/g, '').toUpperCase();
+                const isBought = activeContracts.has(cleanContract) || activeContracts.has(cleanSymbol);
+                
+                let actCell = '';
+                if (isBought) {
+                    actCell = '<td style="text-align:center"><button disabled class="btn-bought" style="background:#238636;color:#ffffff;border:none;padding:4px 10px;border-radius:4px;font-weight:bold;cursor:not-allowed;font-size:11px">BOUGHT</button></td>';
+                } else {
+                    actCell = `<td style="text-align:center"><button class="btn-buy" onclick="buyScannedTrade(this, '${t.symbol||''}', '${t.contract||''}', '${t.side||'CE'}', ${t.entry_spot||0}, ${t.current_sl||t.sl||0}, ${t.t1||0}, ${t.t2||0}, ${t.t3||0}, '${eng}')" style="background:#2ea043;color:#ffffff;border:none;padding:4px 12px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px">BUY</button></td>`;
+                }
+
+                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td>${actCell}</tr>`;
             }
             const engines = filter === 'all' ? ['nifty50', 'index'] : [filter];
             engines.forEach(eng => {
@@ -811,7 +909,7 @@ HTML_TEMPLATE = """
                 if (staged.length) {
                     scanHtml += '<div class="scan-section-title">[' + engLabel + '] Scan Results (' + staged.length + ')</div>';
                     scanHtml += '<div style="overflow-x:auto"><table><thead><tr>' + colHeaders + '</tr></thead><tbody>';
-                    staged.forEach(t => { scanHtml += tradeRow(t, 'badge-open'); });
+                    staged.forEach(t => { scanHtml += tradeRow(t, 'badge-open', eng); });
                     scanHtml += '</tbody></table></div>';
                 }
             });
@@ -1960,7 +2058,7 @@ def api_scan_export():
                     ])
         csv_bytes = output.getvalue().encode("utf-8-sig")
         return Response(csv_bytes, mimetype="text/csv",
-                        headers={"Content-Disposition": f"attachment; filename=scan_export_{dt.now().strftime('%Y%m%d_%H%M%S')}.csv"})
+                        headers={"Content-Disposition": f"attachment; filename=scan_export_{dt.now().strftime('%d_%m_%y_%H%M')}.csv"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)})
 
@@ -2184,6 +2282,87 @@ def api_update_position():
             logging.info(f"[OVERRIDE] Created new DB trade for {engine}/{symbol}")
     logging.info(f"Position override queued: {engine}/{symbol} {vals}")
     return jsonify({"ok": True})
+
+# ──────────────────────────────────────────────
+#  1-CLICK BUY SCANNED TRADE API
+# ──────────────────────────────────────────────
+@app.route("/api/buy-scanned-trade", methods=["POST"])
+def api_buy_scanned_trade():
+    try:
+        data = request.json or {}
+        symbol = data.get("symbol")
+        contract = data.get("contract") or symbol
+        side = data.get("side", "CE")
+        entry_spot = float(data.get("entry_spot") or 0)
+        current_sl = float(data.get("current_sl") or data.get("sl") or 0)
+        t1 = float(data.get("t1") or 0)
+        t2 = float(data.get("t2") or 0)
+        t3 = float(data.get("t3") or 0)
+        engine = data.get("engine", "daily")
+        
+        if not symbol:
+            return jsonify({"ok": False, "error": "symbol is required"}), 400
+
+        c_str = str(contract).upper()
+        if "SENSEX" in c_str or "BSE" in c_str:
+            exch = "BFO"
+        elif "CE" in c_str or "PE" in c_str or "NIFTY" in c_str or "BANK" in c_str:
+            exch = "NFO"
+        else:
+            exch = "NSE"
+
+        order_id = None
+        if _kite_session:
+            try:
+                q_key = f"{exch}:{contract}"
+                q = _kite_session.quote([q_key])
+                ltp = float(q.get(q_key, {}).get("last_price", 0))
+                ask = 0
+                depth = q.get(q_key, {}).get("depth", {}).get("sell", [])
+                if depth and len(depth) > 0:
+                    ask = float(depth[0].get("price", 0))
+                price = round((ask if ask > 0 else ltp) * 1.005, 1)
+                
+                from trading_core import STOCK_REGISTRY
+                lot_size = STOCK_REGISTRY.get(symbol, {}).get("lot_size", 1) if exch != "NSE" else 1
+                
+                order_id = _kite_session.place_order(
+                    variety=_kite_session.VARIETY_REGULAR,
+                    tradingsymbol=contract,
+                    exchange=exch,
+                    transaction_type=_kite_session.TRANSACTION_TYPE_BUY,
+                    quantity=lot_size,
+                    order_type=_kite_session.ORDER_TYPE_LIMIT,
+                    price=price,
+                    product=_kite_session.PRODUCT_NRML if exch != "NSE" else _kite_session.PRODUCT_CNC
+                )
+                logging.info(f"[1-CLICK BUY] Placed buy order for {contract} on {exch} (Order ID: {order_id})")
+            except Exception as k_err:
+                logging.warning(f"[1-CLICK BUY KITE ORDER WARNING] {contract}: {k_err}")
+
+        trade_data = {
+            "contract": contract,
+            "entry_spot": entry_spot,
+            "current_sl": current_sl,
+            "t1": t1,
+            "t2": t2,
+            "t3": t3,
+            "side": side,
+            "pattern": "1CLICK_BUY",
+            "position_type": "stock" if exch == "NSE" else "option",
+            "user_edited": True
+        }
+        tid = trade_db.create_trade(engine, symbol, trade_data)
+        clear_executed_exit(contract)
+
+        return jsonify({
+            "ok": True,
+            "message": f"Successfully placed 1-Click BUY for {contract}" + (f" (Order ID: {order_id})" if order_id else ""),
+            "trade_id": tid
+        })
+    except Exception as e:
+        logging.error(f"1-Click Buy API failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 EXPORT_STATE_FILE = "output/monitor/export_state.json"
 

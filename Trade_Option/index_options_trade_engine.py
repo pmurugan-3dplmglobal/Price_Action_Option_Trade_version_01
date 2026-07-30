@@ -276,13 +276,19 @@ def execute_index_entry(kite, pos):
         logging.info(f"[BACKTEST ENTRY] {pos['contract']} ({pos['side']})")
         return True
     try:
-        q = kite.quote(f"{kite.EXCHANGE_NFO}:{pos['contract']}")
-        ltp = q[f"{kite.EXCHANGE_NFO}:{pos['contract']}"]["last_price"]
-        ask = q[f"{kite.EXCHANGE_NFO}:{pos['contract']}"]["depth"]["sell"][0]["price"]
+        c_str = str(pos['contract']).upper()
+        target_exch = "BFO" if ("SENSEX" in c_str or "BSE" in c_str) else "NFO"
+        q_key = f"{target_exch}:{pos['contract']}"
+        q = kite.quote([q_key])
+        ltp = float(q.get(q_key, {}).get("last_price", 0))
+        ask = 0
+        depth = q.get(q_key, {}).get("depth", {}).get("sell", [])
+        if depth and len(depth) > 0:
+            ask = float(depth[0].get("price", 0))
         price = round((ask if ask > 0 else ltp) * 1.005, 1)
         kite.place_order(
             variety=kite.VARIETY_REGULAR, tradingsymbol=pos["contract"],
-            exchange=kite.EXCHANGE_NFO, transaction_type=kite.TRANSACTION_TYPE_BUY,
+            exchange=target_exch, transaction_type=kite.TRANSACTION_TYPE_BUY,
             quantity=pos["lot_size"] * pos["position_size"], order_type=kite.ORDER_TYPE_LIMIT,
             price=price, product=kite.PRODUCT_NRML
         )
