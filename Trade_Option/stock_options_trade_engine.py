@@ -461,9 +461,10 @@ def run_anchor_scan(kite):
                     continue
                 valid_anchor = find_newest_valid_anchor(df)
                 if valid_anchor:
+                    opt_contract = resolve_option_contract(symbol, valid_anchor["Close"], config["strike_step"], "CE") or symbol
                     anchor_item = {
                         "symbol": symbol,
-                        "contract": symbol,
+                        "contract": opt_contract,
                         "entry_spot": valid_anchor["Close"],
                         "current_sl": valid_anchor["SL"],
                         "t1": valid_anchor["T1"], "t2": valid_anchor["T2"], "t3": valid_anchor["T3"],

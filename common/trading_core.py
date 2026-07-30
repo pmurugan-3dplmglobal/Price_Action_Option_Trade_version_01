@@ -494,6 +494,19 @@ def calculate_sl_buffer(price_level, side="BULL"):
     else:
         return round(price - buffer, 2)
 
+def clean_timestamp(ts):
+    """Clean ISO timestamp string by stripping timezone offsets (+05:30), seconds, and T separator."""
+    if not ts or ts == '-':
+        return ""
+    s = str(ts).split('+')[0].split('.')[0].replace('T', ' ').strip()
+    p = s.split(' ')
+    if len(p) == 2:
+        date_part, time_part = p[0], p[1]
+        t_parts = time_part.split(':')
+        if len(t_parts) >= 2:
+            return f"{date_part} {t_parts[0]}:{t_parts[1]}"
+    return s
+
 # ──────────────────────────────────────────────
 #  ANCHOR (A-FORMATION) DETECTION — 5 PATTERNS
 # ──────────────────────────────────────────────
@@ -1474,12 +1487,12 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                 "t2": t2,
                 "t3": t3,
                 "pattern": pattern,
-                "entry_time": entry_time,
-                "exit_time": exit_time,
+                "entry_time": clean_timestamp(entry_time),
+                "exit_time": clean_timestamp(exit_time),
                 "result": result,
                 "carry_forward": False,
                 "rr": round(rr, 2),
-                "candle_a_time": t.get("candle_a_time") or t.get("CandleATime") or t.get("entry_time", ""),
+                "candle_a_time": clean_timestamp(t.get("candle_a_time") or t.get("CandleATime") or t.get("entry_time", "")),
                 "timeframe": t.get("timeframe", ""),
                 "candle_tf_time": t.get("candle_tf_time", "")
             }
