@@ -442,7 +442,7 @@ def main_scan_loop(kite):
                 try:
                     with open(SL_TARGET_OVERRIDES_FILE) as f:
                         overrides = json.load(f)
-                    eng_overrides = overrides.pop("index", None)
+                    eng_overrides = overrides.get("index", {})
                     if eng_overrides:
                         with position_lock:
                             for sym, vals in eng_overrides.items():
@@ -465,11 +465,6 @@ def main_scan_loop(kite):
                                         if tid:
                                             trade_db.update_trade(tid, {k: target_pos[k] for k in ("current_sl", "t1", "t2", "t3") if k in target_pos})
                                         logging.info(f"[OVERRIDE] Applied SL/T for {target_pos.get('contract', sym)}: SL={target_pos.get('current_sl')} T1={target_pos.get('t1')} T2={target_pos.get('t2')} T3={target_pos.get('t3')}")
-                    if overrides:
-                        with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
-                            json.dump(overrides, f, indent=2)
-                    else:
-                        os.remove(SL_TARGET_OVERRIDES_FILE)
                 except Exception as e:
                     logging.warning(f"Override apply failed: {e}")
             temp_stored_trades = run_scan_cycle(kite)

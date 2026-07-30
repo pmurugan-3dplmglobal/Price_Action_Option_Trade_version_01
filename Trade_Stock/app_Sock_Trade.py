@@ -2231,6 +2231,10 @@ def api_update_position():
     if t1 is not None and str(t1).strip() != "": vals["t1"] = float(t1)
     if t2 is not None and str(t2).strip() != "": vals["t2"] = float(t2)
     if t3 is not None and str(t3).strip() != "": vals["t3"] = float(t3)
+    vals["user_edited"] = True
+
+    clean_target = str(symbol).replace(" ", "").upper()
+
     overrides = {}
     try:
         if os.path.exists(SL_TARGET_OVERRIDES_FILE):
@@ -2238,36 +2242,60 @@ def api_update_position():
                 overrides = json.load(f)
     except Exception:
         overrides = {}
-    overrides.setdefault(engine, {})[symbol] = vals
+
+    for eng_k in (engine, "nifty50", "index", "daily"):
+        overrides.setdefault(eng_k, {})[symbol] = vals
+        overrides.setdefault(eng_k, {})[clean_target] = vals
+
     os.makedirs(os.path.dirname(SL_TARGET_OVERRIDES_FILE), exist_ok=True)
     with open(SL_TARGET_OVERRIDES_FILE, "w") as f:
         json.dump(overrides, f, indent=2)
+
     clear_executed_exit(symbol)
-    ACTIVE_EDIT_LOCKS.discard(str(symbol).replace(" ", "").upper())
+    clear_executed_exit(clean_target)
+    ACTIVE_EDIT_LOCKS.discard(clean_target)
+
     matched = False
     with data_lock:
         update_keys = list(vals.keys())
+
+        # 1. Update in-memory all_trades
         for t in cached_data.get("all_trades", []):
-            t_sym = t.get("symbol") or t.get("contract") or ""
-            if t_sym == symbol or t.get("contract") == symbol:
+            t_sym = str(t.get("symbol") or "").replace(" ", "").upper()
+            t_cnt = str(t.get("contract") or "").replace(" ", "").upper()
+            if clean_target in (t_sym, t_cnt) or t_sym in clean_target or t_cnt in clean_target:
                 matched = True
                 for k in update_keys: t[k] = vals[k]
                 tid = t.get("id")
                 if tid:
                     trade_db.update_trade(tid, vals)
-        for pos_list in [cached_data.get("positions", {})]:
-            for pos_key, pos in (pos_list.items() if isinstance(pos_list, dict) else enumerate(pos_list)):
-                if isinstance(pos, dict) and ((pos.get("symbol") or pos.get("contract") or "") == symbol or pos.get("contract") == symbol):
+
+        # 2. Update in-memory positions
+        for pos_key, pos in (cached_data.get("positions", {}).items() if isinstance(cached_data.get("positions"), dict) else enumerate(cached_data.get("positions", []))):
+            if isinstance(pos, dict):
+                p_sym = str(pos.get("symbol") or "").replace(" ", "").upper()
+                p_cnt = str(pos.get("contract") or "").replace(" ", "").upper()
+                if clean_target in (p_sym, p_cnt) or p_sym in clean_target or p_cnt in clean_target:
                     matched = True
                     for k in update_keys: pos[k] = vals[k]
                     tid = pos.get("id")
                     if tid:
                         trade_db.update_trade(tid, vals)
+
+        # 3. Update in-memory kite_positions so UI refreshes immediately
+        for kp in cached_data.get("kite_positions", []):
+            k_sym = str(kp.get("symbol") or "").replace(" ", "").upper()
+            k_cnt = str(kp.get("contract") or "").replace(" ", "").upper()
+            if clean_target in (k_sym, k_cnt) or k_sym in clean_target or k_cnt in clean_target:
+                for k in update_keys: kp[k] = vals[k]
+
         if not matched:
             contract = symbol
             exchange = "NSE"
             for kp in cached_data.get("kite_positions", []):
-                if kp.get("contract") == symbol or kp.get("symbol") == symbol:
+                k_sym = str(kp.get("symbol") or "").replace(" ", "").upper()
+                k_cnt = str(kp.get("contract") or "").replace(" ", "").upper()
+                if clean_target in (k_sym, k_cnt) or k_sym in clean_target or k_cnt in clean_target:
                     contract = kp.get("contract", symbol)
                     exchange = kp.get("exchange", "NSE")
                     break
