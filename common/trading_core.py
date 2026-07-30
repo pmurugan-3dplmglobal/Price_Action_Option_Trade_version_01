@@ -1500,7 +1500,7 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                 carry_fwd.append(trade)
             else:
                 active_live.append(trade)
-            c = str(p.get("contract") or s or "").replace(" ", "").upper()
+            c = str(p.get("contract") or "").replace(" ", "").upper()
             if c: active_keys.add(c)
 
         def _trade_key(t):

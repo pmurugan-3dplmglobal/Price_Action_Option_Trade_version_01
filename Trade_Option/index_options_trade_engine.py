@@ -67,14 +67,15 @@ BACKTEST_DATE = None
 ACTIVE_POSITIONS = {}
 position_lock = threading.Lock()
 instrument_dump = None
-ANCHOR_SCAN_REQUEST_FILE = os.path.join("output", "monitor", "anchor_scan_request.txt")
-ANCHOR_SCAN_STOP_FILE = os.path.join("output", "monitor", "anchor_scan_stop.txt")
-LIVE_EXECUTION_FLAG = os.path.join("input", "index_live.flag")
-SCAN_DISPLAY_FILE = os.path.join("output", "monitor", "scan_display_index.json")
-SL_TARGET_OVERRIDES_FILE = os.path.join("output", "monitor", "sl_target_overrides.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ANCHOR_SCAN_REQUEST_FILE = os.path.join(BASE_DIR, "output", "monitor", "anchor_scan_request.txt")
+ANCHOR_SCAN_STOP_FILE = os.path.join(BASE_DIR, "output", "monitor", "anchor_scan_stop.txt")
+LIVE_EXECUTION_FLAG = os.path.join(BASE_DIR, "input", "index_live.flag")
+SCAN_DISPLAY_FILE = os.path.join(BASE_DIR, "output", "monitor", "scan_display_index.json")
+SL_TARGET_OVERRIDES_FILE = os.path.join(BASE_DIR, "output", "monitor", "sl_target_overrides.json")
 
 journal_lock = threading.Lock()
-JOURNAL_FILE = "output/monitor/trade_journal.csv"
+JOURNAL_FILE = os.path.join(BASE_DIR, "output", "monitor", "trade_journal.csv")
 
 class FlushFileHandler(logging.FileHandler):
     def emit(self, record):
