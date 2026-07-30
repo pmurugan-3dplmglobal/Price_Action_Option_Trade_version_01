@@ -41,6 +41,7 @@ from trading_core import (
     sync_kite_positions as shared_sync_kite,
     write_scan_display_data as shared_write_display,
     derive_sl_targets_for_symbol,
+    derive_sl_targets_for_contract,
     lookup_scan_sl_target,
     reconcile_positions as shared_reconcile,
     resolve_option_strikes as shared_resolve_strikes,
@@ -462,12 +463,34 @@ def run_anchor_scan(kite):
                 valid_anchor = find_newest_valid_anchor(df)
                 if valid_anchor:
                     opt_contract = resolve_option_contract(symbol, valid_anchor["Close"], config["strike_step"], "CE") or symbol
+                    opt_entry, opt_sl, opt_t1, opt_t2, opt_t3 = 0.0, 0.0, None, None, None
+                    try:
+                        q_key = f"NFO:{opt_contract}"
+                        q = kite.quote([q_key])
+                        opt_entry = float(q.get(q_key, {}).get("last_price", 0) or q.get(q_key, {}).get("ohlc", {}).get("close", 0))
+                    except Exception:
+                        opt_entry = 0.0
+                    
+                    if opt_entry > 0:
+                        opt_data = derive_sl_targets_for_contract(kite, opt_contract, opt_entry, TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)
+                        if opt_data:
+                            opt_sl = opt_data.get("current_sl", round(opt_entry * 0.90, 2))
+                            opt_t1 = opt_data.get("t1")
+                            opt_t2 = opt_data.get("t2")
+                            opt_t3 = opt_data.get("t3")
+                    if not opt_entry or opt_entry <= 0:
+                        opt_entry = valid_anchor["Close"]
+                        opt_sl = valid_anchor["SL"]
+                        opt_t1 = valid_anchor["T1"]
+                        opt_t2 = valid_anchor["T2"]
+                        opt_t3 = valid_anchor["T3"]
+
                     anchor_item = {
                         "symbol": symbol,
                         "contract": opt_contract,
-                        "entry_spot": valid_anchor["Close"],
-                        "current_sl": valid_anchor["SL"],
-                        "t1": valid_anchor["T1"], "t2": valid_anchor["T2"], "t3": valid_anchor["T3"],
+                        "entry_spot": opt_entry,
+                        "current_sl": opt_sl,
+                        "t1": opt_t1, "t2": opt_t2, "t3": opt_t3,
                         "rr": valid_anchor["RR"],
                         "pattern": valid_anchor["Pattern"],
                         "timeframe": TIMEFRAME_ANCHOR,
@@ -476,10 +499,10 @@ def run_anchor_scan(kite):
                         "candle_a_time": valid_anchor["CandleATime"]
                     }
                     formed_anchors.append(anchor_item)
-                    logging.info(f"ANCHOR MATCH: {symbol} | {valid_anchor['Pattern']} | Close: {valid_anchor['Close']}")
+                    logging.info(f"ANCHOR MATCH: {symbol} | {opt_contract} | OptEntry: {opt_entry} | OptSL: {opt_sl}")
                     log_to_journal(symbol, valid_anchor["Pattern"], TIMEFRAME_ANCHOR,
-                                   "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
-                                    entry=valid_anchor["Close"], sl=valid_anchor["SL"], target=valid_anchor["T1"] or "")
+                                   "ANCHOR_SCAN", "SCANNED", f"Option {opt_contract}",
+                                    entry=opt_entry, sl=opt_sl, target=opt_t1 or "")
         time.sleep(1)
     logging.info(f"Anchor scan complete: found {len(formed_anchors)} formed patterns")
     if formed_anchors:
