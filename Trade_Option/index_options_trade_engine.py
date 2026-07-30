@@ -199,6 +199,10 @@ def run_scan_cycle(kite):
 # ──────────────────────────────────────────────
 
 def run_anchor_scan(kite):
+    cfg_applied = load_program_config_for_engine("index")
+    for k, v in cfg_applied.items():
+        if k in ("TIMEFRAME_ENTRY", "TIMEFRAME_ANCHOR"): globals()[k] = v
+        elif k == "LOOKBACK_DAYS": globals()["LOOKBACK_DAYS"] = int(v)
     limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
     max_days = limits.get(TIMEFRAME_ANCHOR, 180)
     from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
