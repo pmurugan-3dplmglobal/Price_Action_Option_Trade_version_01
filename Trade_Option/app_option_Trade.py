@@ -858,6 +858,125 @@ HTML_TEMPLATE = """
             }
         }
 
+        async function runNegationAnalysis() {
+            const symbol = (document.getElementById('an-symbol') || {}).value || '';
+            const entry = parseFloat((document.getElementById('an-entry') || {}).value || 0);
+            const tf = (document.getElementById('an-tf') || {}).value || '75min';
+            const eng = (document.getElementById('an-engine') || {}).value || 'nifty50';
+            const resBox = document.getElementById('analyzer-results');
+            const btn = document.getElementById('an-submit-btn');
+
+            if (!symbol || !entry || isNaN(entry) || entry <= 0) {
+                showToast('Please enter a valid Symbol/Contract and Entry Price (> 0)', 'error');
+                return;
+            }
+
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = 'Analyzing Negation Targets...';
+            }
+            if (resBox) {
+                resBox.innerHTML = '<div style="padding:20px;text-align:center;color:#8b949e;">Fetching chart candles and computing Negation Theory pivots...</div>';
+            }
+
+            try {
+                const r = await fetch('/api/analyze-trade', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({symbol: symbol, entry_price: entry, timeframe: tf, engine: eng})
+                });
+                const d = await r.json();
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '🔍 Analyze Negation Targets & SL';
+                }
+
+                if (d.ok) {
+                    window._lastAnalysis = d;
+                    const t1 = d.t1 !== 'N/A' && d.t1 ? parseFloat(d.t1).toFixed(2) : 'N/A';
+                    const t2 = d.t2 !== 'N/A' && d.t2 ? parseFloat(d.t2).toFixed(2) : 'N/A';
+                    const t3 = d.t3 !== 'N/A' && d.t3 ? parseFloat(d.t3).toFixed(2) : 'N/A';
+                    const sl = d.current_sl ? parseFloat(d.current_sl).toFixed(2) : 'N/A';
+
+                    if (resBox) {
+                        resBox.innerHTML = `
+                            <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-top:16px;">
+                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                                    <h3 style="color:#58a6ff;margin:0;font-size:15px;">${d.symbol} — Negation Theory Analysis</h3>
+                                    <span class="badge badge-open">${d.pattern}</span>
+                                </div>
+                                <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(130px, 1fr));gap:12px;margin-bottom:16px;">
+                                    <div style="background:#0d1117;padding:10px;border-radius:6px;border:1px solid #30363d;">
+                                        <div style="font-size:11px;color:#8b949e;">Entry Price</div>
+                                        <div style="font-size:16px;font-weight:bold;color:#c9d1d9;">₹${d.entry_price.toFixed(2)}</div>
+                                    </div>
+                                    <div style="background:#0d1117;padding:10px;border-radius:6px;border:1px solid #f8514944;">
+                                        <div style="font-size:11px;color:#f85149;">Active SL (10% Rule)</div>
+                                        <div style="font-size:16px;font-weight:bold;color:#f85149;">₹${sl}</div>
+                                    </div>
+                                    <div style="background:#0d1117;padding:10px;border-radius:6px;border:1px solid #3fb95044;">
+                                        <div style="font-size:11px;color:#3fb950;">Target 1 (T1)</div>
+                                        <div style="font-size:16px;font-weight:bold;color:#3fb950;">${t1 !== 'N/A' ? '₹'+t1 : 'N/A'}</div>
+                                    </div>
+                                    <div style="background:#0d1117;padding:10px;border-radius:6px;border:1px solid #3fb95044;">
+                                        <div style="font-size:11px;color:#3fb950;">Target 2 (T2)</div>
+                                        <div style="font-size:16px;font-weight:bold;color:#3fb950;">${t2 !== 'N/A' ? '₹'+t2 : 'N/A'}</div>
+                                    </div>
+                                    <div style="background:#0d1117;padding:10px;border-radius:6px;border:1px solid #3fb95044;">
+                                        <div style="font-size:11px;color:#3fb950;">Target 3 (T3)</div>
+                                        <div style="font-size:16px;font-weight:bold;color:#3fb950;">${t3 !== 'N/A' ? '₹'+t3 : 'N/A'}</div>
+                                    </div>
+                                    <div style="background:#0d1117;padding:10px;border-radius:6px;border:1px solid #58a6ff44;">
+                                        <div style="font-size:11px;color:#58a6ff;">Risk-Reward (RR)</div>
+                                        <div style="font-size:16px;font-weight:bold;color:#58a6ff;">${d.rr} : 1</div>
+                                    </div>
+                                </div>
+                                <div style="display:flex;gap:10px;">
+                                    <button onclick="applyAnalyzedTradeToActive()" style="background:#2ea043;color:#ffffff;border:none;padding:8px 16px;border-radius:6px;font-weight:bold;cursor:pointer;font-size:12px;">📌 Apply to Active Positions</button>
+                                </div>
+                            </div>
+                        `;
+                    }
+                } else {
+                    if (resBox) resBox.innerHTML = `<div style="padding:16px;background:#f8514922;border:1px solid #f85149;border-radius:6px;color:#f85149;">Error: ${d.error}</div>`;
+                }
+            } catch(e) {
+                if (btn) {
+                    btn.disabled = false;
+                    btn.textContent = '🔍 Analyze Negation Targets & SL';
+                }
+                if (resBox) resBox.innerHTML = `<div style="padding:16px;background:#f8514922;border:1px solid #f85149;border-radius:6px;color:#f85149;">Network Error: ${e.message}</div>`;
+            }
+        }
+
+        async function applyAnalyzedTradeToActive() {
+            const d = window._lastAnalysis;
+            if (!d) return;
+            try {
+                const r = await fetch('/api/update-position', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        engine: d.engine,
+                        symbol: d.symbol,
+                        current_sl: d.current_sl,
+                        t1: d.t1 !== 'N/A' ? d.t1 : null,
+                        t2: d.t2 !== 'N/A' ? d.t2 : null,
+                        t3: d.t3 !== 'N/A' ? d.t3 : null
+                    })
+                });
+                const res = await r.json();
+                if (res.ok) {
+                    showToast(`Position ${d.symbol} added to Active Positions!`, 'success');
+                    setTimeout(refreshData, 500);
+                } else {
+                    showToast(`Failed: ${res.error}`, 'error');
+                }
+            } catch(e) {
+                showToast(`Error: ${e.message}`, 'error');
+            }
+        }
+
         let editStates = {};
         window._isEditing = false;
         function renderScanTab(force=false) {
@@ -1888,6 +2007,7 @@ HTML_TEMPLATE = """
             <div class="tab-bar">
                 <button class="tab-btn active" onclick="switchTab('log-tab')">Live Log</button>
                 <button class="tab-btn" onclick="switchTab('journal-tab')">Trade Journal</button>
+                <button class="tab-btn" onclick="switchTab('analyzer-tab')">🎯 Negation Analyzer</button>
             </div>
             <div id="log-tab" class="tab-content active">
                 <div class="section-panel">
@@ -1917,6 +2037,45 @@ HTML_TEMPLATE = """
                         </div>
                     </div>
                     <div id="journal-body"><p class="empty-state">No journal entries yet</p></div>
+                </div>
+            </div>
+            <div id="analyzer-tab" class="tab-content">
+                <div class="section-panel">
+                    <div class="section-header"><span>🎯 Negation Theory Interactive Analyzer</span></div>
+                    <div style="padding:16px;">
+                        <p style="font-size:12px;color:#8b949e;margin-bottom:16px;">
+                            Enter any contract or spot symbol with your entry parameters to calculate exact Negation Theory Targets (T1/T2/T3) and 10% Max Loss SL instantly.
+                        </p>
+                        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;margin-bottom:16px;">
+                            <div>
+                                <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:4px;">Symbol / Contract</label>
+                                <input type="text" id="an-symbol" placeholder="e.g. WIPRO26AUG200CE or VEDL" style="width:100%;padding:8px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;font-size:12px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:4px;">Entry Price (₹)</label>
+                                <input type="number" step="any" id="an-entry" placeholder="e.g. 1.60 or 12.00" style="width:100%;padding:8px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;font-size:12px;">
+                            </div>
+                            <div>
+                                <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:4px;">Timeframe</label>
+                                <select id="an-tf" style="width:100%;padding:8px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;font-size:12px;">
+                                    <option value="75min">75min (Anchor TF)</option>
+                                    <option value="60minute">60min (Anchor TF)</option>
+                                    <option value="15minute">15min (Entry TF)</option>
+                                    <option value="day">Daily</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size:11px;color:#8b949e;display:block;margin-bottom:4px;">Engine / Market</label>
+                                <select id="an-engine" style="width:100%;padding:8px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;font-size:12px;">
+                                    <option value="nifty50">Nifty 50 Stock Options</option>
+                                    <option value="index">Index Options</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button id="an-submit-btn" onclick="runNegationAnalysis()" style="background:#2ea043;color:#ffffff;border:none;padding:9px 18px;border-radius:6px;font-weight:600;cursor:pointer;font-size:13px;width:100%;">🔍 Analyze Negation Targets & SL</button>
+                        
+                        <div id="analyzer-results"></div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -2449,6 +2608,62 @@ def api_buy_scanned_trade():
         })
     except Exception as e:
         logging.error(f"1-Click Buy API failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# ──────────────────────────────────────────────
+#  INTERACTIVE NEGATION ANALYZER API
+# ──────────────────────────────────────────────
+@app.route("/api/analyze-trade", methods=["POST"])
+def api_analyze_trade():
+    try:
+        data = request.json or {}
+        symbol = str(data.get("symbol", "")).strip().upper()
+        entry_price = float(data.get("entry_price", 0)) if data.get("entry_price") else 0.0
+        timeframe = str(data.get("timeframe", "75min")).strip()
+        engine = str(data.get("engine", "nifty50")).strip()
+        
+        if not symbol or entry_price <= 0:
+            return jsonify({"ok": False, "error": "Valid Symbol and Entry Price (> 0) required"}), 400
+
+        kite = None
+        try:
+            api_k, acc_t = load_kite_session()
+            kite = KiteConnect(api_key=api_k, access_token=acc_t)
+        except Exception:
+            kite = None
+
+        analysis = derive_sl_targets_for_contract(kite, symbol, entry_price, timeframe, timeframe)
+        if not analysis:
+            sl_val = round(entry_price * 0.90, 2)
+            analysis = {
+                "current_sl": sl_val,
+                "t1": None, "t2": None, "t3": None,
+                "pattern": "NEGATION_ESTIMATED"
+            }
+
+        sl_val = analysis.get("current_sl", round(entry_price * 0.90, 2))
+        t1_val = analysis.get("t1")
+        t2_val = analysis.get("t2")
+        t3_val = analysis.get("t3")
+        
+        risk = (entry_price - sl_val) if sl_val < entry_price else 0
+        rr = round((t1_val - entry_price) / risk, 2) if (t1_val and risk > 0) else 0.0
+
+        return jsonify({
+            "ok": True,
+            "symbol": symbol,
+            "contract": symbol,
+            "entry_price": entry_price,
+            "current_sl": sl_val,
+            "t1": t1_val if t1_val else "N/A",
+            "t2": t2_val if t2_val else "N/A",
+            "t3": t3_val if t3_val else "N/A",
+            "rr": rr,
+            "pattern": analysis.get("pattern", "NEGATION_DERIVED"),
+            "engine": engine
+        })
+    except Exception as e:
+        logging.error(f"Analyze Trade API failed: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # ──────────────────────────────────────────────
