@@ -8,6 +8,8 @@ from kiteconnect import KiteConnect
 import trade_db
 from trading_core import (
     lookup_scan_sl_target,
+    derive_sl_targets_for_contract,
+    load_kite_session,
     close_position as shared_close_position,
     close_stock_position as shared_close_stock_position,
     clear_executed_exit
