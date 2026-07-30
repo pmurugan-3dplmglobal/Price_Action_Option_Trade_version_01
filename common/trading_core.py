@@ -218,27 +218,54 @@ def sync_stock_tokens(kite):
 #  SESSION & UTILITIES
 # ──────────────────────────────────────────────
 
+def get_best_token_file(default_path=TOKEN_FILE):
+    cwd = os.getcwd()
+    base = os.path.dirname(os.path.dirname(__file__))
+    candidates = [
+        default_path,
+        os.path.join(cwd, "input", "kite_access_token.txt"),
+        os.path.join(cwd, "Trade_Option", "input", "kite_access_token.txt"),
+        os.path.join(cwd, "Trade_Stock", "input", "kite_access_token.txt"),
+        os.path.join(base, "input", "kite_access_token.txt"),
+        os.path.join(base, "Trade_Option", "input", "kite_access_token.txt"),
+        os.path.join(base, "Trade_Stock", "input", "kite_access_token.txt")
+    ]
+    best_file = None
+    best_mtime = 0
+    for c in candidates:
+        if os.path.exists(c):
+            try:
+                mtime = os.path.getmtime(c)
+                if mtime > best_mtime:
+                    best_mtime = mtime
+                    best_file = c
+            except Exception:
+                pass
+    return best_file or default_path
+
 def load_kite_session(token_file=TOKEN_FILE):
-    if not os.path.exists(token_file):
-        raise FileNotFoundError(f"Token file missing at {token_file}. Run Kite_Access_Token_gen.py first.")
-    with open(token_file, "r", encoding="utf-8") as f:
+    target_file = get_best_token_file(token_file)
+    if not os.path.exists(target_file):
+        raise FileNotFoundError(f"Token file missing at {target_file}. Run Kite_Access_Token_gen.py first.")
+    with open(target_file, "r", encoding="utf-8") as f:
         data = json.load(f)
     if not data.get("api_key") or not data.get("access_token"):
-        raise ValueError("Corrupted token file.")
+        raise ValueError(f"Corrupted token file at {target_file}.")
     return data["api_key"], data["access_token"]
 
 def ensure_kite_session(kite, token_file=TOKEN_FILE):
     """Ensure the KiteConnect object in memory has the latest access token from disk if it changed."""
     try:
-        if not kite or not os.path.exists(token_file):
+        target_file = get_best_token_file(token_file)
+        if not kite or not os.path.exists(target_file):
             return
-        with open(token_file, "r", encoding="utf-8") as f:
+        with open(target_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         at = data.get("access_token")
         if at and getattr(kite, "access_token", None) != at:
             kite.set_access_token(at)
-            logging.info(f"[KITE_SESSION] Updated in-memory KiteConnect access_token from {token_file}")
-    except Exception as e:
+            logging.info(f"[KITE_SESSION] Updated in-memory KiteConnect access_token from {target_file}")
+    except Exception:
         pass
 
 
@@ -1683,6 +1710,18 @@ def is_setup_already_completed(df_candles, candle_time, t1_target, sl_target):
     except Exception:
         return False
 
+def safe_kite_call(func, *args, retries=3, delay=0.8, **kwargs):
+    for attempt in range(retries):
+        try:
+            return func(*args, **kwargs)
+        except Exception as err:
+            err_str = str(err).lower()
+            if "too many" in err_str or "requests" in err_str or "access_token" in err_str or "api_key" in err_str or "429" in err_str:
+                time.sleep(delay * (attempt + 1))
+            else:
+                raise err
+    return func(*args, **kwargs)
+
 def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anchor,
                 entry_scanners, anchor_scanners, resolve_fn, engine_name,
                 timeframe_entry, timeframe_anchor, timeframe_fallback,
@@ -1690,11 +1729,11 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
                 log_fn):
     trades = []
     try:
-        spot_quote = kite.ltp([config["token"]])
+        spot_quote = safe_kite_call(kite.ltp, [config["token"]])
         current_spot = float(list(spot_quote.values())[0]["last_price"])
     except Exception:
         try:
-            df_spot = fetch_and_resample_candles(kite, config["token"], from_entry, to_entry, timeframe_entry)
+            df_spot = safe_kite_call(fetch_and_resample_candles, kite, config["token"], from_entry, to_entry, timeframe_entry)
             if df_spot.empty:
                 return []
             current_spot = float(df_spot.iloc[-1]['close'])

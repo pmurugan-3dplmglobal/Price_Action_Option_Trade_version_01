@@ -79,7 +79,7 @@ def resolve_option_strikes(symbol, spot_price, step_size, option_type, n_range):
 def dummy_log_fn(*args, **kwargs):
     pass
 
-def run_scan_for_registry(kite, registry, engine_name, timeframe, strike_range=0, max_workers=5):
+def run_scan_for_registry(kite, registry, engine_name, timeframe, strike_range=0, max_workers=2):
     ref_now = dt.now()
     limits = {
         "minute": 60, "3minute": 100, "5minute": 100, "10minute": 100,
@@ -109,7 +109,7 @@ def run_scan_for_registry(kite, registry, engine_name, timeframe, strike_range=0
 
     def _scan_one(symbol, config):
         try:
-            time.sleep(0.05)  # Throttling to keep API request rate optimal
+            time.sleep(0.15)  # Throttling to keep API request rate safely within Zerodha limit (max 3 req/sec)
             return scan_symbol(
                 kite, symbol, config,
                 from_date, to_date, from_date, to_date,
