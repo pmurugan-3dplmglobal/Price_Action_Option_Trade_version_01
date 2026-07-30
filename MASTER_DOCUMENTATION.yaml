@@ -127,6 +127,14 @@ backtest_suite:
     - "backtest/test_spot_scan.py"
 
   strategy_rules:
+    core_architectural_thumb_rule:
+      rule_name: "Non-Negotiable Architecture Thumb Rule: Feature Isolation & Zero Regression"
+      fundamental_principle: "New features, modules, or tools (e.g. Negation Analyzer, Exporters) MUST be strictly isolated and MUST NEVER alter, degrade, or break existing working functionality."
+      enforcement_guidelines:
+        - "Engine Separation: Index Options Engine (index_options_trade_engine.py / app_option_Trade.py) and Stock Options Engine (stock_options_trade_engine.py / app_Sock_Trade.py) must maintain clear workspace and display isolation."
+        - "Default View Integrity: Web UI dashboards must default their view filters to their corresponding core engine (Index Dashboard defaults to 'Index', Stock Dashboard defaults to 'Nifty 50')."
+        - "Independent Testing: Any new API endpoint or scanner tool must be tested in isolation to verify zero side-effects on active trade execution, position recovery, and display files."
+
     anchor_selection_and_invalidation:
       rule_name: "Universal Anchor Validity & Activity Rule (is_anchor_valid_and_active)"
       anchor_selection: "Scanners must select the NEWEST (most recent) valid Anchor candle in the chart."
