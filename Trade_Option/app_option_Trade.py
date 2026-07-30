@@ -999,7 +999,7 @@ HTML_TEMPLATE = """
                 }
             });
 
-            const filter = (document.getElementById('scan-engine-filter') || {}).value || 'index';
+            const filter = (document.getElementById('scan-engine-filter') || {}).value || 'all';
             let scanHtml = '';
             const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">AncherT</th><th onclick="sortTable(this,9)">EntryTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th><th style="text-align:center">Action</th>';
             function tradeRow(t, resultBadge, eng) {
@@ -1982,9 +1982,9 @@ HTML_TEMPLATE = """
                                 <div id="live-exec-toggle-idx" class="toggle-switch" onclick="toggleLiveExecution('index')"></div>
                             </div>
                             <select id="scan-engine-filter" onchange="renderScanTab()" class="filter-select" style="width:auto">
-                                <option value="index" selected>Index</option>
-                                <option value="nifty50">Nifty 50</option>
-                                <option value="all">All</option>
+                                <option value="all" selected>All Options</option>
+                                <option value="index">Index Options</option>
+                                <option value="nifty50">Stock Options</option>
                             </select>
                             <button class="btn-scan-clear" onclick="clearScanData()" style="padding:2px 10px;background:inherit;border:1px solid #f85149;color:#f85149;border-radius:4px;font-size:10px;cursor:pointer">Clear</button>
                             <button class="btn-scan-export" onclick="scanExport()" style="padding:2px 10px;background:inherit;border:1px solid #58a6ff;color:#58a6ff;border-radius:4px;font-size:10px;cursor:pointer">Export</button>
