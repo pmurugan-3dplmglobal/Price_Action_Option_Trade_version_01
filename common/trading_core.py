@@ -1334,15 +1334,11 @@ def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry=
         if sl_val is None or sl_val <= 0 or (ep > 0 and sl_val >= ep):
             sl_val = max_loss_sl if max_loss_sl > 0 else (round(ep * 0.90, 2) if ep > 0 else 0.0)
 
-        # Fallback for Targets if Negation Theory targets are missing or unreached
+        # Fallback for T1 only if Negation Theory target is missing or below entry
         if ep > 0 and sl_val > 0 and sl_val < ep:
             risk = round(ep - sl_val, 2)
             if t1 is None or t1 <= ep:
                 t1 = round(ep + (1.88 * risk), 2)
-            if t2 is None or t2 <= ep:
-                t2 = round(ep + (2.50 * risk), 2)
-            if t3 is None or t3 <= ep:
-                t3 = round(ep + (3.50 * risk), 2)
 
         return {
             "entry_price": round(ep, 2) if ep else 0.0,
