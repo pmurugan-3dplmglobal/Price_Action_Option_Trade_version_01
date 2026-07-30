@@ -451,18 +451,14 @@ def find_profit_targets(df_hist, entry_close, stop_loss=None):
     t2 = clustered[1] if len(clustered) >= 2 else None
     t3 = clustered[2] if len(clustered) >= 3 else None
 
-    # 7. Dynamic Risk-based fallbacks if non-negated pivot targets are missing
+    # Strict Negation Theory Rule: T1, T2, T3 are strictly based on non-negated chart swing pivots.
+    # If a 2nd or 3rd non-negated swing level does not exist on the chart, keep T2/T3 as None (N/A).
     if t1 is None:
         t1 = round(entry_close + max(1.5 * risk, entry_close * 0.20), 2)
-    if t2 is None:
-        t2 = round(max(t1 + 1.5 * risk, t1 * 1.15), 2)
-    if t3 is None:
-        t3 = round(max(t2 + 2.0 * risk, t2 * 1.15), 2)
 
-    # Ordering & minimum separation check
-    if t2 <= t1 * (1 + step_tol):
+    if t2 is not None and t2 <= t1 * (1 + step_tol):
         t2 = round(t1 * (1 + step_tol * 2), 2)
-    if t3 <= t2 * (1 + step_tol):
+    if t3 is not None and t2 is not None and t3 <= t2 * (1 + step_tol):
         t3 = round(t2 * (1 + step_tol * 2), 2)
 
     return t1, t2, t3
@@ -2317,16 +2313,14 @@ def find_profit_targets_bearish(df_hist, entry_close, stop_loss=None):
     t2 = clustered[1] if len(clustered) >= 2 else None
     t3 = clustered[2] if len(clustered) >= 3 else None
 
+    # Strict Negation Theory Rule: T1, T2, T3 are strictly based on non-negated chart swing pivots.
+    # If a 2nd or 3rd non-negated swing level does not exist on the chart, keep T2/T3 as None (N/A).
     if t1 is None:
         t1 = round(entry_close - max(1.5 * risk, entry_close * 0.05), 2)
-    if t2 is None:
-        t2 = round(min(t1 - 1.5 * risk, t1 * 0.90), 2)
-    if t3 is None:
-        t3 = round(min(t2 - 2.0 * risk, t2 * 0.85), 2)
 
-    if t2 >= t1 * (1 - step_tol):
+    if t2 is not None and t2 >= t1 * (1 - step_tol):
         t2 = round(t1 * (1 - step_tol * 2), 2)
-    if t3 >= t2 * (1 - step_tol):
+    if t3 is not None and t2 is not None and t3 >= t2 * (1 - step_tol):
         t3 = round(t2 * (1 - step_tol * 2), 2)
 
     return t1, t2, t3
