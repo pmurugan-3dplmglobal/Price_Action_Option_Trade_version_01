@@ -126,26 +126,44 @@ backtest_suite:
     - "backtest/test_option_strike_fetch.py"
     - "backtest/test_spot_scan.py"
 
-strategy_rules:
-  pattern_priority:
-    - "1. Bullish Engulfing / Bearish Engulfing (ABCD)"
-    - "2. Lower Low (LL) Sweep / Higher High (HH) Sweep"
-    - "3. Two Higher Highs / Two Lower Lows"
-    - "4. Baby Candle / Shooting Star"
-    - "5. Bullish Harami / Bearish Harami"
-    - "Rule: First valid pattern matching R:R >= 1.88 triggers setup."
+  strategy_rules:
+    anchor_selection_and_invalidation:
+      rule_name: "Universal Anchor Validity & Activity Rule (is_anchor_valid_and_active)"
+      anchor_selection: "Scanners must select the NEWEST (most recent) valid Anchor candle in the chart."
+      timeframe_scope: "STRICTLY SPECIFIC TO ANCHOR TIMEFRAME (df_anchor). Evaluated exclusively on candles of timeframe_anchor."
+      invalidation_conditions:
+        - "SL Violation: Discard setup if any subsequent candle on df_anchor closed below SL (closing basis)."
+        - "Target 1 Pre-Hit: Discard setup if any subsequent candle on df_anchor touched T1 (high price >= T1)."
+      generic_enforcement: "Applied universally across stock_options_trade_engine.py, index_options_trade_engine.py, scan_anchor_bcd_breakout(), scan_symbol(), and UI APIs."
 
-  risk_management:
-    check_interval: "Every 5 seconds / WebSocket heartbeat daemon"
-    stages:
-      sl_hit: "Exit full position (EXIT_SL)"
-      t1_hit: "Move SL to Entry / Breakeven (TRAIL_BE)"
-      t2_hit: "Move SL to T1 level (TRAIL_T1)"
-      t3_hit: "Exit full position (EXIT_T3)"
-    setup_classification:
-      fresh_entry: "HIGH_PRIORITY: Post-D candles have not hit T1 or SL yet. SL at original A.low buffer."
-      t2_continuation: "LOW_PRIORITY: Post-D candles ALREADY hit T1, but T2/T3 is still pending and unreached. SL trailed to T1 level."
-      expired: "REJECTED: Post-D candles closed below SL OR completed all targets (T3)."
+    target_derivation_and_timeframes:
+      default_anchor_tf: "Nifty 50 Stock Options & Spot default strictly to 30minute (Same Entry & Anchor TF: timeframe_entry='30minute', timeframe_anchor='30minute'). Index Options default to 15minute."
+      derivation_method: "All profit targets (T1, T2, T3) are derived strictly from df_anchor candles using Negation Theory (find_profit_targets / find_profit_targets_bearish)."
+      target_buffers:
+        cheap_options: "Price <= 50: Early exit buffer = max(0.50, Target * 1.5%)"
+        mid_options: "Price 50-200: Early exit buffer = max(1.00, Target * 1.5%)"
+        spots_high_options: "Price > 200: Early exit buffer = max(2.00, Target * 1.0%)"
+      missing_targets_exit_rule: "If T2/T3 are N/A (None), reaching T1 minus early exit buffer triggers a 100% full position exit."
+
+    pattern_priority:
+      - "1. Bullish Engulfing / Bearish Engulfing (ABCD)"
+      - "2. Lower Low (LL) Sweep / Higher High (HH) Sweep"
+      - "3. Two Higher Highs / Two Lower Lows"
+      - "4. Baby Candle / Shooting Star"
+      - "5. Bullish Harami / Bearish Harami"
+      - "Rule: First valid pattern matching R:R >= 1.88 triggers setup."
+
+    risk_management:
+      check_interval: "Every 5 seconds / WebSocket heartbeat daemon"
+      stages:
+        sl_hit: "Exit full position (EXIT_SL)"
+        t1_hit: "Move SL to Entry / Breakeven (TRAIL_BE), or FULL EXIT if T2/T3 are N/A"
+        t2_hit: "Move SL to T1 level (TRAIL_T1)"
+        t3_hit: "Exit full position (EXIT_T3)"
+      setup_classification:
+        fresh_entry: "HIGH_PRIORITY: Post-D candles have not hit T1 or SL yet. SL at original A.low buffer."
+        t2_continuation: "LOW_PRIORITY: Post-D candles ALREADY hit T1, but T2/T3 is still pending and unreached. SL trailed to T1 level."
+        expired: "REJECTED: Post-D candles closed below SL OR completed all targets (T3)."
 
   bullish_patterns:
     - id: 1
