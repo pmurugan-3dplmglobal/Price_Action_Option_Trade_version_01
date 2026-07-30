@@ -1479,7 +1479,7 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                 "result": result,
                 "carry_forward": False,
                 "rr": round(rr, 2),
-                "candle_a_time": t.get("candle_a_time", ""),
+                "candle_a_time": t.get("candle_a_time") or t.get("CandleATime") or t.get("entry_time", ""),
                 "timeframe": t.get("timeframe", ""),
                 "candle_tf_time": t.get("candle_tf_time", "")
             }

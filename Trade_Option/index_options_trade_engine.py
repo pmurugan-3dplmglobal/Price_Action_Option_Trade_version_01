@@ -263,7 +263,7 @@ def run_anchor_scan(kite):
                     "symbol": symbol, "contract": ce['tradingsymbol'], "entry_spot": v_ce["Close"],
                     "current_sl": v_ce["SL"], "t1": v_ce["T1"], "t2": v_ce["T2"], "t3": v_ce["T3"], "rr": v_ce["RR"],
                     "pattern": v_ce["Pattern"], "timeframe": TIMEFRAME_ANCHOR, "side": "CE",
-                    "entry_time": v_ce["CandleATime"]
+                    "entry_time": v_ce["CandleATime"], "candle_a_time": v_ce["CandleATime"]
                 })
                 logging.info(f"ANCHOR CE MATCH: {ce['tradingsymbol']} | {v_ce['Pattern']} | Close: {v_ce['Close']}")
                 log_to_journal(symbol, v_ce["Pattern"], TIMEFRAME_ANCHOR,
@@ -277,7 +277,7 @@ def run_anchor_scan(kite):
                     "symbol": symbol, "contract": pe['tradingsymbol'], "entry_spot": v_pe["Close"],
                     "current_sl": v_pe["SL"], "t1": v_pe["T1"], "t2": v_pe["T2"], "t3": v_pe["T3"], "rr": v_pe["RR"],
                     "pattern": v_pe["Pattern"], "timeframe": TIMEFRAME_ANCHOR, "side": "PE",
-                    "entry_time": v_pe["CandleATime"]
+                    "entry_time": v_pe["CandleATime"], "candle_a_time": v_pe["CandleATime"]
                 })
                 logging.info(f"ANCHOR PE MATCH: {pe['tradingsymbol']} | {v_pe['Pattern']} | Close: {v_pe['Close']}")
                 log_to_journal(symbol, v_pe["Pattern"], TIMEFRAME_ANCHOR,

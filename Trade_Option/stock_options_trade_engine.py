@@ -471,7 +471,8 @@ def run_anchor_scan(kite):
                         "pattern": valid_anchor["Pattern"],
                         "timeframe": TIMEFRAME_ANCHOR,
                         "side": "CE",
-                        "entry_time": valid_anchor["CandleATime"]
+                        "entry_time": valid_anchor["CandleATime"],
+                        "candle_a_time": valid_anchor["CandleATime"]
                     }
                     formed_anchors.append(anchor_item)
                     logging.info(f"ANCHOR MATCH: {symbol} | {valid_anchor['Pattern']} | Close: {valid_anchor['Close']}")
