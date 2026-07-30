@@ -460,26 +460,38 @@ def run_anchor_scan(kite):
                 for name, scanner_func in scanners:
                     result = scanner_func(df)
                     if result:
-                        t1, t2, t3 = find_profit_targets(df, result["Close"], stop_loss=result["SL"])
-                        risk = round(result["Close"] - result["SL"], 2) if (result["Close"] > result["SL"]) else 0
+                        candle_a_time = str(result.get("CandleATime") or "")
+                        sl_val = result["SL"]
+                        t1, t2, t3 = find_profit_targets(df, result["Close"], stop_loss=sl_val)
+                        
+                        # Rule: Discard if any subsequent candle closed below SL or touched T1
+                        if candle_a_time and 'date' in df.columns:
+                            subsequent = df[df['date'].astype(str) > candle_a_time]
+                            if not subsequent.empty:
+                                if (subsequent['close'] <= sl_val).any():
+                                    continue
+                                if t1 and (subsequent['high'] >= t1).any():
+                                    continue
+                                    
+                        risk = round(result["Close"] - sl_val, 2) if (result["Close"] > sl_val) else 0
                         rr = round((t1 - result["Close"]) / risk, 2) if (t1 and risk > 0) else 0.0
                         anchor_item = {
                             "symbol": symbol,
                             "contract": symbol,
                             "entry_spot": result["Close"],
-                            "current_sl": result["SL"],
+                            "current_sl": sl_val,
                             "t1": t1, "t2": t2, "t3": t3,
                             "rr": rr,
                             "pattern": result["Pattern"],
                             "timeframe": TIMEFRAME_ANCHOR,
                             "side": "CE",
-                            "entry_time": result.get("CandleATime", "")
+                            "entry_time": candle_a_time
                         }
                         formed_anchors.append(anchor_item)
                         logging.info(f"ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
                         log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
                                        "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
-                                        entry=result["Close"], sl=result["SL"], target=t1 or "")
+                                        entry=result["Close"], sl=sl_val, target=t1 or "")
                         break
         time.sleep(1)
     logging.info(f"Anchor scan complete: found {len(formed_anchors)} formed patterns")
