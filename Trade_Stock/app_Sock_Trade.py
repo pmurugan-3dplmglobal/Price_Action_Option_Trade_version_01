@@ -2526,7 +2526,19 @@ def api_buy_scanned_trade():
         else:
             exch = "NSE"
 
+        global _kite_session
         order_id = None
+        if not _kite_session:
+            try:
+                from common.trading_core import load_kite_session
+                api_k, acc_t = load_kite_session()
+                if api_k and acc_t:
+                    from kiteconnect import KiteConnect
+                    _kite_session = KiteConnect(api_key=api_k)
+                    _kite_session.set_access_token(acc_t)
+            except Exception as init_err:
+                logging.warning(f"1-Click Buy auto-init kite session failed: {init_err}")
+
         if _kite_session:
             try:
                 q_key = f"{exch}:{contract}"
@@ -2537,9 +2549,12 @@ def api_buy_scanned_trade():
                 if depth and len(depth) > 0:
                     ask = float(depth[0].get("price", 0))
                 price = round((ask if ask > 0 else ltp) * 1.005, 1)
+                if price <= 0:
+                    price = round(entry_spot * 1.005, 1)
                 
-                from trading_core import STOCK_REGISTRY
+                from common.trading_core import STOCK_REGISTRY
                 lot_size = STOCK_REGISTRY.get(symbol, {}).get("lot_size", 1) if exch != "NSE" else 1
+                prod = _kite_session.PRODUCT_CNC if exch == "NSE" else _kite_session.PRODUCT_NRML
                 
                 order_id = _kite_session.place_order(
                     variety=_kite_session.VARIETY_REGULAR,
@@ -2549,11 +2564,12 @@ def api_buy_scanned_trade():
                     quantity=lot_size,
                     order_type=_kite_session.ORDER_TYPE_LIMIT,
                     price=price,
-                    product=_kite_session.PRODUCT_NRML if exch != "NSE" else _kite_session.PRODUCT_CNC
+                    product=prod
                 )
                 logging.info(f"[1-CLICK BUY] Placed buy order for {contract} on {exch} (Order ID: {order_id})")
             except Exception as k_err:
                 logging.warning(f"[1-CLICK BUY KITE ORDER WARNING] {contract}: {k_err}")
+                return jsonify({"ok": False, "error": f"Kite Order Placement Failed: {k_err}"}), 400
 
         trade_data = {
             "contract": contract,
