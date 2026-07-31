@@ -494,6 +494,37 @@ def calculate_sl_buffer(price_level, side="BULL"):
     else:
         return round(price - buffer, 2)
 
+def check_circuit_and_spread_shield(kite, symbol, exchange="NSE", side="BUY"):
+    """
+    Circuit Band & Liquidity Safety Shield:
+    Checks if stock is locked at Upper or Lower Circuit before triggering order placement.
+    Returns True if order is safe to execute, False if locked in circuit.
+    """
+    if kite is None or not symbol:
+        return True
+    try:
+        q_key = f"{exchange}:{symbol}"
+        q = kite.quote([q_key])
+        q_data = q.get(q_key, {})
+        if not q_data:
+            return True
+        
+        ltp = float(q_data.get("last_price", 0))
+        lower_circuit = float(q_data.get("lower_circuit_limit", 0))
+        upper_circuit = float(q_data.get("upper_circuit_limit", 0))
+        
+        if ltp > 0:
+            if str(side).upper() == "BUY" and upper_circuit > 0 and ltp >= upper_circuit:
+                logging.warning(f"[CIRCUIT SHIELD] Buy blocked for {symbol}: Locked at Upper Circuit ({upper_circuit})")
+                return False
+            if str(side).upper() in ["SELL", "SHORT", "EXIT"] and lower_circuit > 0 and ltp <= lower_circuit:
+                logging.warning(f"[CIRCUIT SHIELD] Sell blocked for {symbol}: Locked at Lower Circuit ({lower_circuit})")
+                return False
+        return True
+    except Exception as e:
+        logging.warning(f"Circuit check exception for {symbol}: {e}")
+        return True
+
 def clean_timestamp(ts):
     """Clean ISO timestamp string by stripping timezone offsets (+05:30), seconds, and T separator."""
     if not ts or ts == '-':

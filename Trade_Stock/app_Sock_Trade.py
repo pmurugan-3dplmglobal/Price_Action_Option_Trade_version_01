@@ -59,6 +59,18 @@ PROGRAMS = {
         "color": "#d29922",
         "log_file": DAILY_LOG_FILE,
         "config_fields": {
+            "product_type": {
+                "label": "Execution Mode",
+                "type": "select",
+                "options": ["CNC", "MIS"],
+                "default": "CNC"
+            },
+            "target_index": {
+                "label": "Target Index Universe",
+                "type": "select",
+                "options": ["NIFTY50", "NIFTY_NEXT_100", "NIFTY_MIDCAP_100", "NIFTY_SMALLCAP_250"],
+                "default": "NIFTY50"
+            },
             "timeframe": {
                 "label": "Timeframe",
                 "type": "select",
@@ -71,10 +83,22 @@ PROGRAMS = {
     "bear_trade": {
         "name": "Stock_Bearish_Reversal_Scanner",
         "file": "stock_bearish_reversal_scanner.py",
-        "desc": "Scans Nifty 50 on selected timeframe (Default: Day) for Bearish setups & Negation targets, exports to Excel",
+        "desc": "Scans predefined NSE indices on selected timeframe for Bearish setups & Negation targets",
         "color": "#f85149",
         "log_file": BEAR_LOG_FILE,
         "config_fields": {
+            "product_type": {
+                "label": "Execution Mode",
+                "type": "select",
+                "options": ["CNC", "MIS"],
+                "default": "CNC"
+            },
+            "target_index": {
+                "label": "Target Index Universe",
+                "type": "select",
+                "options": ["NIFTY50", "NIFTY_NEXT_100", "NIFTY_MIDCAP_100", "NIFTY_SMALLCAP_250"],
+                "default": "NIFTY50"
+            },
             "timeframe": {
                 "label": "Timeframe",
                 "type": "select",

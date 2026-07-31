@@ -3,11 +3,13 @@
   "api_secret": "9g7d5kktr38d7yvq11njsm4upz8kc6s1",
   "daily": {
     "timeframe": "day",
-    "lookback_days": 2000
+    "lookback_days": 2000,
+    "product_type": "CNC"
   },
   "bear_trade": {
     "timeframe": "day",
-    "lookback_days": 2000
+    "lookback_days": 2000,
+    "product_type": "CNC"
   },
   "_backtest": false,
   "index": {
