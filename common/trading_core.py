@@ -1326,7 +1326,7 @@ def derive_sl_targets_for_contract(kite, contract, entry_price, timeframe_entry=
     """
     try:
         ref_now = dt.now()
-        from_d = (ref_now - timedelta(days=5)).strftime("%Y-%m-%d")
+        from_d = (ref_now - timedelta(days=30)).strftime("%Y-%m-%d")
         to_d = ref_now.strftime("%Y-%m-%d")
         
         contract_str = str(contract).upper()
