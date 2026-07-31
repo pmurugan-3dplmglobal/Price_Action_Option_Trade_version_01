@@ -421,97 +421,11 @@ def execute_highest_rr_trade(kite, staged):
 # ──────────────────────────────────────────────
 
 def run_anchor_scan(kite):
-    cfg_applied = load_program_config_for_engine("nifty50")
-    for k, v in cfg_applied.items():
-        if k in ("TIMEFRAME_ENTRY", "TIMEFRAME_ANCHOR"): globals()[k] = v
-        elif k == "LOOKBACK_DAYS": globals()["LOOKBACK_DAYS"] = int(v)
-    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
-    max_days = limits.get(TIMEFRAME_ANCHOR, 180)
-    from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
-    to_date = dt.now().strftime("%Y-%m-%d")
-    scanners = [
-        ("S1", find_anchor_bullish_engulfing),
-        ("S2", find_anchor_ll_sweep),
-        ("S3", find_anchor_hammer_baby),
-        ("S4", find_anchor_bullish_harami),
-        ("S5", find_anchor_two_higher_highs),
-    ]
-    formed_anchors = []
-    scan_order = sorted(STOCK_REGISTRY.keys())
-    batch_size = 2
-    for i in range(0, len(scan_order), batch_size):
-        if os.path.exists(ANCHOR_SCAN_STOP_FILE):
-            logging.info("Anchor scan stopped by user")
-            os.remove(ANCHOR_SCAN_STOP_FILE)
-            return
-        batch = scan_order[i:i+batch_size]
-        with ThreadPoolExecutor(max_workers=batch_size) as pool:
-            tasks = {}
-            for symbol in batch:
-                config = STOCK_REGISTRY[symbol]
-                with position_lock:
-                    if symbol in ACTIVE_POSITIONS:
-                        continue
-                tasks[pool.submit(lambda cfg=config: fetch_and_resample_candles(
-                    kite, cfg["token"], from_date, to_date, TIMEFRAME_ANCHOR
-                ))] = symbol
-            for f in as_completed(tasks):
-                symbol = tasks[f]
-                try:
-                    df = f.result()
-                except Exception as e:
-                    logging.warning(f"Anchor data failed for {symbol}: {e}")
-                    continue
-                if df.empty:
-                    continue
-                valid_anchor = find_newest_valid_anchor(df)
-                if valid_anchor:
-                    opt_contract = resolve_option_contract(symbol, valid_anchor["Close"], config["strike_step"], "CE") or symbol
-                    opt_entry, opt_sl, opt_t1, opt_t2, opt_t3 = 0.0, 0.0, None, None, None
-                    try:
-                        q_key = f"NFO:{opt_contract}"
-                        q = kite.quote([q_key])
-                        opt_entry = float(q.get(q_key, {}).get("last_price", 0) or q.get(q_key, {}).get("ohlc", {}).get("close", 0))
-                    except Exception:
-                        opt_entry = 0.0
-                    
-                    if opt_entry > 0:
-                        opt_data = derive_sl_targets_for_contract(kite, opt_contract, opt_entry, TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)
-                        if opt_data:
-                            opt_sl = opt_data.get("current_sl", round(opt_entry * 0.90, 2))
-                            opt_t1 = opt_data.get("t1")
-                            opt_t2 = opt_data.get("t2")
-                            opt_t3 = opt_data.get("t3")
-                    if not opt_entry or opt_entry <= 0:
-                        opt_entry = valid_anchor["Close"]
-                        opt_sl = valid_anchor["SL"]
-                        opt_t1 = valid_anchor["T1"]
-                        opt_t2 = valid_anchor["T2"]
-                        opt_t3 = valid_anchor["T3"]
-
-                    anchor_item = {
-                        "symbol": symbol,
-                        "contract": opt_contract,
-                        "entry_spot": opt_entry,
-                        "current_sl": opt_sl,
-                        "t1": opt_t1, "t2": opt_t2, "t3": opt_t3,
-                        "rr": valid_anchor["RR"],
-                        "pattern": valid_anchor["Pattern"],
-                        "timeframe": TIMEFRAME_ANCHOR,
-                        "side": "CE",
-                        "entry_time": valid_anchor["CandleATime"],
-                        "candle_a_time": valid_anchor["CandleATime"]
-                    }
-                    formed_anchors.append(anchor_item)
-                    logging.info(f"ANCHOR MATCH: {symbol} | {opt_contract} | OptEntry: {opt_entry} | OptSL: {opt_sl}")
-                    log_to_journal(symbol, valid_anchor["Pattern"], TIMEFRAME_ANCHOR,
-                                   "ANCHOR_SCAN", "SCANNED", f"Option {opt_contract}",
-                                    entry=opt_entry, sl=opt_sl, target=opt_t1 or "")
-        time.sleep(1)
-    logging.info(f"Anchor scan complete: found {len(formed_anchors)} formed patterns")
-    if formed_anchors:
-        with position_lock:
-            shared_write_display(formed_anchors, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
+    logging.info("On-demand scan requested: executing full A-B-C-D breakout scan across Nifty 50 option contracts...")
+    staged = run_scan_cycle(kite)
+    with position_lock:
+        shared_write_display(staged or [], dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
+    logging.info(f"On-demand scan complete: found {len(staged or [])} full A-B-C-D breakout setup(s)")
 
 # ──────────────────────────────────────────────
 #  POSITION MONITORING — SL, TRAILING, TARGETS

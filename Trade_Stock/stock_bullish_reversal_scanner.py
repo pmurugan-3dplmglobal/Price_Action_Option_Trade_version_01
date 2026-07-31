@@ -226,54 +226,10 @@ def export_results(results):
 # ──────────────────────────────────────────────
 
 def run_anchor_scan(kite):
-    logging.info("Anchor scan requested (daily) - executing analysis...")
-    
-    limits = {"minute": 55, "3minute": 90, "5minute": 160}
-    max_days = limits.get(TIMEFRAME_ANCHOR, 180)
-    from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
-    to_date = dt.now().strftime("%Y-%m-%d")
-    
-    scanners = [
-        ("S1", find_anchor_bullish_engulfing),
-        ("S2", find_anchor_ll_sweep),
-        ("S3", find_anchor_hammer_baby),
-        ("S4", find_anchor_bullish_harami),
-    ]
-    
-    scan_order = STOCK_REGISTRY.keys()
-    
-    for symbol in scan_order:
-        if os.path.exists(ANCHOR_SCAN_STOP_FILE):
-            logging.info("Anchor scan stopped by user")
-            os.remove(ANCHOR_SCAN_STOP_FILE)
-            return
-            
-        config = STOCK_REGISTRY[symbol]
-        with position_lock:
-            if symbol in ACTIVE_POSITIONS:
-                continue
-                
-        try:
-            df = fetch_and_resample_candles(kite, config["token"], from_date, to_date, TIMEFRAME_ANCHOR)
-        except Exception as e:
-            logging.warning(f"Anchor data failed for {symbol}: {e}")
-            continue
-            
-        if df.empty:
-            continue
-            
-        for name, scanner in scanners:
-            result = scanner(df)
-            if result:
-                logging.info(f"ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
-                log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
-                               "ANCHOR_SCAN", "SCANNED", "A formation from anchor scan",
-                               entry=result["Close"], sl=result["SL"], target="")
-                break
-            
-        time.sleep(0.5)
-    
-    logging.info("Anchor scan complete (daily)")
+    logging.info("On-demand scan requested: executing full A-B-C-D bullish breakout scan across Nifty 50 stocks...")
+    load_program_config()
+    results = run_scan(kite)
+    logging.info(f"On-demand scan complete: found {len([r for r in (results or []) if r.get('T1')])} full A-B-C-D bullish setup(s)")
 
 def print_summary(results):
     matches = [r for r in results if r.get("T1")]

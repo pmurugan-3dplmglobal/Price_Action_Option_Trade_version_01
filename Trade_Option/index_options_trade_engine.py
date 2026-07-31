@@ -199,99 +199,11 @@ def run_scan_cycle(kite):
 # ──────────────────────────────────────────────
 
 def run_anchor_scan(kite):
-    cfg_applied = load_program_config_for_engine("index")
-    for k, v in cfg_applied.items():
-        if k in ("TIMEFRAME_ENTRY", "TIMEFRAME_ANCHOR"): globals()[k] = v
-        elif k == "LOOKBACK_DAYS": globals()["LOOKBACK_DAYS"] = int(v)
-    limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
-    max_days = limits.get(TIMEFRAME_ANCHOR, 180)
-    from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, max_days))).strftime("%Y-%m-%d")
-    to_date = dt.now().strftime("%Y-%m-%d")
-    scanners = [
-        ("Setup_1", find_anchor_bullish_engulfing),
-        ("Setup_2", find_anchor_ll_sweep),
-        ("Setup_3", find_anchor_hammer_baby),
-        ("Setup_4", find_anchor_bullish_harami),
-        ("Setup_5", find_anchor_two_higher_highs),
-    ]
-    formed_anchors = []
-    for symbol, config in INDEX_REGISTRY.items():
-        if os.path.exists(ANCHOR_SCAN_STOP_FILE):
-            logging.info("Anchor scan stopped by user")
-            os.remove(ANCHOR_SCAN_STOP_FILE)
-            return
-        with position_lock:
-            if symbol in ACTIVE_POSITIONS:
-                continue
-        try:
-            spot_quote = kite.ltp([config["token"]])
-            current_spot = float(list(spot_quote.values())[0]["last_price"])
-        except Exception:
-            try:
-                df_spot = fetch_and_resample_candles(kite, config["token"], from_date, to_date, TIMEFRAME_ANCHOR)
-                if df_spot.empty:
-                    continue
-                current_spot = float(df_spot.iloc[-1]['close'])
-            except Exception as e:
-                logging.warning(f"Anchor spot data failed for {symbol}: {e}")
-                continue
-        ce = resolve_option_contract(symbol, current_spot, config['strike_step'], "CE")
-        pe = resolve_option_contract(symbol, current_spot, config['strike_step'], "PE")
-        if not ce or not pe:
-            logging.warning(f"Anchor: Could not resolve contracts for {symbol}")
-            continue
-        dfs = {}
-        try:
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                tasks = {
-                    pool.submit(fetch_and_resample_candles, kite, ce["token"], from_date, to_date, TIMEFRAME_ANCHOR): "ce",
-                    pool.submit(fetch_and_resample_candles, kite, pe["token"], from_date, to_date, TIMEFRAME_ANCHOR): "pe",
-                }
-                for f in as_completed(tasks):
-                    key = tasks[f]
-                    try:
-                        dfs[key] = pd.DataFrame(f.result())
-                    except Exception as e:
-                        logging.warning(f"Anchor {key} failed for {symbol}: {e}")
-                        dfs[key] = pd.DataFrame()
-        except Exception as e:
-            logging.warning(f"Anchor contract data failed for {symbol}: {e}")
-            continue
-        df_ce, df_pe = dfs.get("ce", pd.DataFrame()), dfs.get("pe", pd.DataFrame())
-        if df_ce.empty or df_pe.empty:
-            continue
-        if not df_ce.empty:
-            v_ce = find_newest_valid_anchor(df_ce)
-            if v_ce:
-                formed_anchors.append({
-                    "symbol": symbol, "contract": ce['tradingsymbol'], "entry_spot": v_ce["Close"],
-                    "current_sl": v_ce["SL"], "t1": v_ce["T1"], "t2": v_ce["T2"], "t3": v_ce["T3"], "rr": v_ce["RR"],
-                    "pattern": v_ce["Pattern"], "timeframe": TIMEFRAME_ANCHOR, "side": "CE",
-                    "entry_time": v_ce["CandleATime"], "candle_a_time": v_ce["CandleATime"]
-                })
-                logging.info(f"ANCHOR CE MATCH: {ce['tradingsymbol']} | {v_ce['Pattern']} | Close: {v_ce['Close']}")
-                log_to_journal(symbol, v_ce["Pattern"], TIMEFRAME_ANCHOR,
-                               "ANCHOR_CE", "SCANNED", "A formation from anchor scan",
-                               entry=v_ce["Close"], sl=v_ce["SL"], target=v_ce["T1"] or "",
-                               event_time=v_ce["CandleATime"])
-        if not df_pe.empty:
-            v_pe = find_newest_valid_anchor(df_pe)
-            if v_pe:
-                formed_anchors.append({
-                    "symbol": symbol, "contract": pe['tradingsymbol'], "entry_spot": v_pe["Close"],
-                    "current_sl": v_pe["SL"], "t1": v_pe["T1"], "t2": v_pe["T2"], "t3": v_pe["T3"], "rr": v_pe["RR"],
-                    "pattern": v_pe["Pattern"], "timeframe": TIMEFRAME_ANCHOR, "side": "PE",
-                    "entry_time": v_pe["CandleATime"], "candle_a_time": v_pe["CandleATime"]
-                })
-                logging.info(f"ANCHOR PE MATCH: {pe['tradingsymbol']} | {v_pe['Pattern']} | Close: {v_pe['Close']}")
-                log_to_journal(symbol, v_pe["Pattern"], TIMEFRAME_ANCHOR,
-                               "ANCHOR_PE", "SCANNED", "A formation from anchor scan",
-                               entry=v_pe["Close"], sl=v_pe["SL"], target=v_pe["T1"] or "",
-                               event_time=v_pe["CandleATime"])
-    logging.info(f"Index anchor scan complete: found {len(formed_anchors)} formed patterns")
-    if formed_anchors:
-        with position_lock:
-            shared_write_display(formed_anchors, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "index")
+    logging.info("On-demand scan requested: executing full A-B-C-D breakout scan across index option contracts...")
+    staged = run_scan_cycle(kite)
+    with position_lock:
+        shared_write_display(staged or [], dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "index")
+    logging.info(f"On-demand scan complete: found {len(staged or [])} full A-B-C-D breakout setup(s)")
 
 
 def execute_index_entry(kite, pos):

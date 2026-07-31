@@ -207,48 +207,10 @@ def export_results(results):
     return OUTPUT_FILE
 
 def run_anchor_scan(kite):
-    logging.info("Anchor scan requested (daily bear) - executing analysis...")
-    from_date = (dt.now() - timedelta(days=min(LOOKBACK_DAYS, 180))).strftime("%Y-%m-%d")
-    to_date = dt.now().strftime("%Y-%m-%d")
-    
-    scanners = [
-        ("S1_Bear_Engulf", find_anchor_bearish_engulfing),
-        ("S2_Bear_HH_Sweep", find_anchor_hh_sweep),
-        ("S3_Bear_Two_Lower_Lows", find_anchor_two_lower_lows),
-        ("S4_Bear_ShootingStar", find_anchor_shooting_star_baby),
-        ("S5_Bear_Harami", find_anchor_bearish_harami),
-    ]
-    
-    scan_order = sorted(STOCK_REGISTRY.keys())
-    
-    for symbol in scan_order:
-        if os.path.exists(ANCHOR_SCAN_STOP_FILE):
-            logging.info("Anchor scan stopped by user")
-            os.remove(ANCHOR_SCAN_STOP_FILE)
-            return
-            
-        config = STOCK_REGISTRY[symbol]
-        try:
-            df = fetch_and_resample_candles(kite, config["token"], from_date, to_date, TIMEFRAME_ANCHOR)
-        except Exception as e:
-            logging.warning(f"Anchor data failed for {symbol}: {e}")
-            continue
-            
-        if df.empty:
-            continue
-            
-        for name, scanner in scanners:
-            result = scanner(df)
-            if result:
-                logging.info(f"BEAR ANCHOR MATCH: {symbol} | {result['Pattern']} | Close: {result['Close']}")
-                log_to_journal(symbol, result["Pattern"], TIMEFRAME_ANCHOR,
-                               "ANCHOR_SCAN_BEAR", "SCANNED", "Bear A formation from anchor scan",
-                               entry=result["Close"], sl=result["SL"], target="")
-                break
-            
-        time.sleep(0.3)
-    
-    logging.info("Anchor scan complete (daily bear)")
+    logging.info("On-demand scan requested: executing full A-B-C-D bearish breakout scan across Nifty 50 stocks...")
+    load_program_config()
+    results = run_scan(kite)
+    logging.info(f"On-demand scan complete: found {len([r for r in (results or []) if r.get('T1')])} full A-B-C-D bearish setup(s)")
 
 def print_summary(results):
     matches = [r for r in results if r.get("T1")]
