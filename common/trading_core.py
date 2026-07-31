@@ -967,13 +967,16 @@ def get_fetch_timeframe(timeframe_str):
 
 def fetch_and_resample_candles(kite, token, from_date, to_date, timeframe_str):
     fetch_tf = get_fetch_timeframe(timeframe_str)
+    if hasattr(kite, "timeout") and not kite.timeout:
+        kite.timeout = 10
     raw = None
     for attempt in range(4):
         try:
             raw = kite.historical_data(token, from_date, to_date, fetch_tf)
             break
         except Exception as e:
-            if "Too many requests" in str(e) or "429" in str(e):
+            err_msg = str(e).lower()
+            if "too many requests" in err_msg or "429" in err_msg or "timeout" in err_msg or "connection" in err_msg:
                 time.sleep(0.3 * (attempt + 1))
             else:
                 raise e
