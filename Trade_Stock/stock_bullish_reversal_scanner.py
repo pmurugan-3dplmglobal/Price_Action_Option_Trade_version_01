@@ -162,7 +162,7 @@ def run_scan(kite):
                             "rr": r.get("RR", 0.0),
                             "pattern": r.get("Pattern"),
                             "timeframe": TIMEFRAME_ENTRY,
-                            "side": "CE",
+                            "side": "BUY",
                             "entry_time": clean_timestamp(r.get("CandleATime") or r.get("CandleTime")),
                             "candle_a_time": clean_timestamp(r.get("CandleATime") or r.get("CandleTime"))
                         } for r in all_disp if r.get("Symbol") or r.get("symbol")]
@@ -187,7 +187,7 @@ def run_scan(kite):
                 "rr": r.get("RR", 0.0),
                 "pattern": r.get("Pattern"),
                 "timeframe": TIMEFRAME_ENTRY,
-                "side": "CE",
+                "side": "BUY",
                 "entry_time": c_time,
                 "candle_a_time": c_time
             })
