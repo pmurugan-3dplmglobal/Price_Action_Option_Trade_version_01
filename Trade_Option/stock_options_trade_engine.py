@@ -465,6 +465,7 @@ def _sync_kite_positions(kite):
 
 def main_scan_loop(kite):
     _sync_counter = 0
+    _cycle_count = 0
     while True:
         try:
             ensure_kite_session(kite)
@@ -523,9 +524,10 @@ def main_scan_loop(kite):
             trade_db.clear_cycle_trades("nifty50")
             with position_lock:
                 shared_write_display(staged or [], dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "nifty50")
+            _cycle_count += 1
             elapsed = time.time() - start
             sleep = max(0, SCAN_INTERVAL_SECONDS - elapsed)
-            logging.info(f"[BEAT] Cycle done in {elapsed:.2f}s. Sleep {sleep:.0f}s")
+            logging.info(f"[CYCLE COMPLETE] {_cycle_count} cycle complete in {elapsed:.2f}s | Found {len(staged or [])} setup(s)")
             time.sleep(sleep)
         except Exception as e:
             logging.error(f"Main loop error: {e}")

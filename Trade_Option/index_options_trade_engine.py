@@ -411,8 +411,8 @@ def main_scan_loop(kite):
 
             trade_db.clear_cycle_trades("index")
             with position_lock:
-                shared_write_display(temp_stored_trades, dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "index")
-
+                shared_write_display(temp_stored_trades or [], dict(ACTIVE_POSITIONS), SCAN_DISPLAY_FILE, "index")
+            logging.info(f"[CYCLE COMPLETE] {cycle} cycle complete | Found {len(temp_stored_trades or [])} setup(s)")
             monitor_active_positions(kite)
             time.sleep(max(0, SCAN_INTERVAL_SECONDS))
         except Exception as e:
