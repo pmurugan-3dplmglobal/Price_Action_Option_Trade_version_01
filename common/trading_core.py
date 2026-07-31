@@ -1170,29 +1170,42 @@ def close_position(kite, pos, live_market=True, product=None):
         prev = EXECUTED_EXITS.get(contract, {})
         oid = prev.get("order_id")
         if oid and kite and live_market:
+            o_status = None
             try:
                 orders = kite.orders()
                 for o in orders:
-                    if str(o.get("order_id")) == str(oid) and o.get("status") in ["OPEN", "TRIGGER PENDING"]:
-                        logging.warning(f"[PENDING LIMIT EXIT DETECTED] Order {oid} for {contract} is OPEN/UNFILLED. Cancelling limit order and executing MARKET exit fallback...")
-                        try:
-                            kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=oid)
-                        except Exception as c_err:
-                            logging.warning(f"Could not cancel pending order {oid}: {c_err}")
-                        
-                        m_oid = kite.place_order(
-                            variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
-                            exchange=target_exch, transaction_type=kite.TRANSACTION_TYPE_SELL,
-                            quantity=qty, order_type=kite.ORDER_TYPE_MARKET,
-                            product=target_product
-                        )
-                        save_executed_exit(contract, m_oid, {"type": "MARKET_FALLBACK", "qty": qty})
-                        logging.info(f"Fallback MARKET exit SUCCESS for {contract} on exchange {target_exch} (Order ID: {m_oid})")
-                        return
+                    if str(o.get("order_id")) == str(oid):
+                        o_status = o.get("status")
+                        break
+                if o_status in ["OPEN", "TRIGGER PENDING"]:
+                    logging.warning(f"[PENDING LIMIT EXIT DETECTED] Order {oid} for {contract} is OPEN/UNFILLED. Cancelling limit order and executing MARKET exit fallback...")
+                    try:
+                        kite.cancel_order(variety=kite.VARIETY_REGULAR, order_id=oid)
+                    except Exception as c_err:
+                        logging.warning(f"Could not cancel pending order {oid}: {c_err}")
+                    
+                    m_oid = kite.place_order(
+                        variety=kite.VARIETY_REGULAR, tradingsymbol=contract,
+                        exchange=target_exch, transaction_type=kite.TRANSACTION_TYPE_SELL,
+                        quantity=qty, order_type=kite.ORDER_TYPE_MARKET,
+                        product=target_product
+                    )
+                    save_executed_exit(contract, m_oid, {"type": "MARKET_FALLBACK", "qty": qty})
+                    logging.info(f"Fallback MARKET exit SUCCESS for {contract} on exchange {target_exch} (Order ID: {m_oid})")
+                    return
+                elif o_status in ["CANCELLED", "REJECTED", "EXPIRED", "CANCELLED ALL"]:
+                    logging.warning(f"[EXIT GUARD RESET] Order {oid} for {contract} is {o_status}. Clearing exit guard and retrying exit.")
+                    clear_executed_exit(contract)
+                else:
+                    logging.info(f"[EXIT GUARD BLOCK] {contract} exit order {oid} is {o_status or 'UNKNOWN'}. Skipping duplicate exit call.")
+                    return
             except Exception as check_err:
                 logging.debug(f"Could not verify exit order status for {contract}: {check_err}")
-        logging.info(f"[EXIT GUARD BLOCK] {contract} exit order already submitted (Order ID: {prev.get('order_id')}). Skipping duplicate exit call.")
-        return
+                logging.info(f"[EXIT GUARD BLOCK] {contract} exit order {oid} status could not be verified. Skipping duplicate exit call.")
+                return
+        else:
+            logging.info(f"[EXIT GUARD BLOCK] {contract} exit order already submitted (Order ID: {prev.get('order_id')}). Skipping duplicate exit call.")
+            return
 
     if not live_market:
         logging.info(f"[BACKTEST EXIT] {contract}")
@@ -1457,34 +1470,57 @@ def lookup_scan_sl_target(contract, symbol, engine, kite=None, entry_price=0, ti
         if ov_path:
             with open(ov_path, encoding="utf-8") as f:
                 overrides = json.load(f)
+            best_match = None
+            best_len = -1
             for eng_k in (engine, "nifty50", "index"):
                 eng_ov = overrides.get(eng_k, {})
                 for sym_k, vals in eng_ov.items():
                     clean_k = str(sym_k).replace(" ", "").upper()
-                    if clean_k and (clean_k == clean_c or clean_c in clean_k or clean_k in clean_c):
-                        return {
-                            "current_sl": vals.get("current_sl"),
-                            "t1": vals.get("t1"),
-                            "t2": vals.get("t2"),
-                            "t3": vals.get("t3"),
-                            "pattern": "USER_OVERRIDE",
-                            "user_edited": True
-                        }
+                    if not clean_k:
+                        continue
+                    if clean_k == clean_c:
+                        best_match = (vals, len(clean_k))
+                        break
+                    if clean_c in clean_k and len(clean_k) > best_len:
+                        best_match = (vals, len(clean_k))
+                        best_len = len(clean_k)
+                if best_match:
+                    break
+            if best_match:
+                vals = best_match[0]
+                return {
+                    "current_sl": vals.get("current_sl"),
+                    "t1": vals.get("t1"),
+                    "t2": vals.get("t2"),
+                    "t3": vals.get("t3"),
+                    "pattern": "USER_OVERRIDE",
+                    "user_edited": True
+                }
     except Exception:
         pass
     
     try:
         import trade_db
         all_trades = trade_db.get_all_trades(engine)
+        best_db = None
+        best_len = -1
         for t in all_trades:
             t_is_stock = t.get("position_type") == "stock"
             t_date = (t.get("created_at") or t.get("entry_time") or "")[:10]
             tc = f"{t.get('symbol')}_{t_date}".replace(" ", "").upper() if t_is_stock else str(t.get("contract") or t.get("symbol") or "").replace(" ", "").upper()
-            if tc and (tc == clean_c or clean_c in tc or tc in clean_c):
-                sl = t.get("current_sl")
-                t1 = t.get("t1")
-                if sl and t1:
-                    return {"current_sl": sl, "t1": t1, "t2": t.get("t2"), "t3": t.get("t3"), "pattern": t.get("pattern", "DB_SYNC")}
+            if not tc:
+                continue
+            if tc == clean_c:
+                best_db = t
+                break
+            if clean_c in tc and len(tc) > best_len:
+                best_db = t
+                best_len = len(tc)
+        if best_db:
+            sl = best_db.get("current_sl")
+            t1 = best_db.get("t1")
+            if sl and t1:
+                return {"current_sl": sl, "t1": t1, "t2": best_db.get("t2"), "t3": best_db.get("t3"), "pattern": best_db.get("pattern", "DB_SYNC")}
     except Exception:
         pass
 
@@ -1498,11 +1534,27 @@ def lookup_scan_sl_target(contract, symbol, engine, kite=None, entry_price=0, ti
                 for trade in data.get(section, []):
                     t_date = (trade.get("entry_time") or "")[:10]
                     tc = f"{trade.get('symbol')}_{t_date}".replace(" ", "").upper() if is_stock else str(trade.get("contract") or trade.get("symbol") or "").replace(" ", "").upper()
-                    if tc and (tc == clean_c or clean_c in tc or tc in clean_c):
+                    if not tc:
+                        continue
+                    if tc == clean_c:
                         sl = trade.get("current_sl")
                         t1 = trade.get("t1")
                         if sl and t1:
                             return {"current_sl": sl, "t1": t1, "t2": trade.get("t2"), "t3": trade.get("t3"), "pattern": trade.get("pattern", "SCAN_SYNC")}
+                if clean_c:
+                    best_t = None
+                    best_len = -1
+                    for trade in data.get(section, []):
+                        t_date = (trade.get("entry_time") or "")[:10]
+                        tc = f"{trade.get('symbol')}_{t_date}".replace(" ", "").upper() if is_stock else str(trade.get("contract") or trade.get("symbol") or "").replace(" ", "").upper()
+                        if tc and clean_c in tc and len(tc) > best_len:
+                            best_t = trade
+                            best_len = len(tc)
+                    if best_t:
+                        sl = best_t.get("current_sl")
+                        t1 = best_t.get("t1")
+                        if sl and t1:
+                            return {"current_sl": sl, "t1": t1, "t2": best_t.get("t2"), "t3": best_t.get("t3"), "pattern": best_t.get("pattern", "SCAN_SYNC")}
         except Exception:
             pass
 

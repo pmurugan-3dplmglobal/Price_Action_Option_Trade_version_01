@@ -910,6 +910,60 @@ HTML_TEMPLATE = """
             }
         }
 
+        window.manualExitPosition = async function(btnEl, contract, engine) {
+            if (!confirm(`Confirm Manual EXIT for ${contract}?`)) return;
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.textContent = 'EXITING...';
+                btnEl.style.background = '#8b949e';
+            }
+            try {
+                const r = await fetch('/api/exit-position', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({contract, symbol: contract, engine})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    showToast(d.message || `Position EXITED for ${contract}`, 'success');
+                    setTimeout(refreshData, 500);
+                } else {
+                    showToast(`Exit failed: ${d.error || 'unknown error'}`, 'error');
+                    if (btnEl) {
+                        btnEl.disabled = false;
+                        btnEl.textContent = 'EXIT';
+                        btnEl.style.background = '#da3633';
+                    }
+                }
+            } catch(e) {
+                showToast(`Network error: ${e.message}`, 'error');
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.textContent = 'EXIT';
+                    btnEl.style.background = '#da3633';
+                }
+            }
+        };
+
+        window.manualExitAllPositions = async function() {
+            if (!confirm('Are you sure you want to EXIT ALL active positions?')) return;
+            try {
+                const r = await fetch('/api/exit-all-positions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    showToast(d.message || 'All active positions EXITED', 'success');
+                    setTimeout(refreshData, 500);
+                } else {
+                    showToast(`Exit all failed: ${d.error || 'unknown error'}`, 'error');
+                }
+            } catch(e) {
+                showToast(`Network error: ${e.message}`, 'error');
+            }
+        };
+
         async function runNegationAnalysis() {
             const symbol = (document.getElementById('an-symbol') || {}).value || '';
             const entryVal = (document.getElementById('an-entry') || {}).value;
@@ -1314,7 +1368,7 @@ HTML_TEMPLATE = """
                     const entryVal = t.entry_spot !== undefined && t.entry_spot !== null ? t.entry_spot : '';
                     const uid = 'pos_' + (t.symbol || 'no_sym') + '_' + (t.source || '');
                     const es = editStates[uid];
-                    let slCell, t1Cell, actCell;
+                    let slCell, t1Cell, t2Cell, t3Cell, actCell;
                     if (es && es.active) {
                         const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
                         slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px" oninput="editStates['${uid}'].sl=this.value" onchange="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')"></td>`;
@@ -1329,7 +1383,8 @@ HTML_TEMPLATE = """
                         t3Cell = `<td>${t3v}</td>`;
                         const canEdit = st === 'active';
                         if (canEdit) {
-                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.contract||t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button></td>`;
+                            const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.contract||t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button><button class="btn-exit" style="background:#da3633;color:#fff;border:none;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;" onclick="manualExitPosition(this,'${t.contract||t.symbol||''}','${eng2}')">EXIT</button></td>`;
                         } else {
                             actCell = `<td></td>`;
                         }
@@ -2008,11 +2063,12 @@ HTML_TEMPLATE = """
                 <div class="section-panel">
                     <div class="section-header">
                         <span>Positions</span>
-                        <div style="display:flex;gap:4px;">
+                        <div style="display:flex;gap:4px;align-items:center;">
                             <button class="pos-filter-btn active" onclick="setFilter('position','active')">Active</button>
                             <button class="pos-filter-btn" onclick="setFilter('position','completed')">Completed</button>
                             <button class="pos-filter-btn" onclick="setFilter('position','sl_hit')">SL Hit</button>
                             <button class="pos-filter-btn" onclick="setFilter('position','all')">All</button>
+                            <button class="btn-exit-all" onclick="manualExitAllPositions()" style="padding:2px 10px;background:#da3633;border:1px solid #f85149;color:#fff;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600;margin-left:8px;">EXIT ALL</button>
                         </div>
                     </div>
                     <div id="active-positions-body"><p class="empty-state">No positions</p></div>
@@ -2492,7 +2548,6 @@ def api_update_position():
         overrides = {}
 
     for eng_k in (engine, "nifty50", "index"):
-        overrides.setdefault(eng_k, {})[symbol] = vals
         overrides.setdefault(eng_k, {})[clean_target] = vals
 
     os.makedirs(os.path.dirname(SL_TARGET_OVERRIDES_FILE), exist_ok=True)
@@ -2614,7 +2669,7 @@ def api_buy_scanned_trade():
         order_id = None
         if not _kite_session:
             try:
-                from common.trading_core import load_kite_session
+                from trading_core import load_kite_session
                 api_k, acc_t = load_kite_session()
                 if api_k and acc_t:
                     from kiteconnect import KiteConnect
@@ -2636,7 +2691,7 @@ def api_buy_scanned_trade():
                 if price <= 0:
                     price = round(entry_spot * 1.005, 1)
                 
-                from common.trading_core import INDEX_REGISTRY, STOCK_REGISTRY, get_option_lot_size
+                from trading_core import INDEX_REGISTRY, STOCK_REGISTRY, get_option_lot_size
                 registry = INDEX_REGISTRY if engine == "index" else STOCK_REGISTRY
                 lot_size = get_option_lot_size(contract) or registry.get(symbol, {}).get("lot_size", 1)
                 prod = _kite_session.PRODUCT_CNC if exch == "NSE" else _kite_session.PRODUCT_NRML
@@ -2751,7 +2806,7 @@ def api_analyze_trade():
 @app.route("/api/journal/get", methods=["GET"])
 def api_journal_get():
     try:
-        from common.daily_trade_journal import load_journal_entries
+        from daily_trade_journal import load_journal_entries
         return jsonify(load_journal_entries())
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -2759,7 +2814,7 @@ def api_journal_get():
 @app.route("/api/journal/sync", methods=["POST"])
 def api_journal_sync():
     try:
-        from common.daily_trade_journal import generate_daily_journal
+        from daily_trade_journal import generate_daily_journal
         req = request.json or {}
         dt_str = req.get("date")
         entries = generate_daily_journal(dt_str, kite=_kite_session)
@@ -2770,7 +2825,7 @@ def api_journal_sync():
 @app.route("/api/journal/update", methods=["POST"])
 def api_journal_update():
     try:
-        from common.daily_trade_journal import load_journal_entries, save_journal_entries
+        from daily_trade_journal import load_journal_entries, save_journal_entries
         data = request.json or {}
         symbol = data.get("symbol")
         date_str = data.get("date")
@@ -2877,7 +2932,7 @@ def auto_eod_journal_scheduler():
                 if _last_eod_journal_triggered_date != today_str:
                     _last_eod_journal_triggered_date = today_str
                     logging.info(f"[AUTO EOD JOURNAL] Market closed. Auto-generating EOD trade journal for {today_str}...")
-                    from common.daily_trade_journal import generate_daily_journal
+                    from daily_trade_journal import generate_daily_journal
                     generate_daily_journal(target_date=today_str, kite=_kite_session)
                     logging.info(f"[AUTO EOD JOURNAL] Successfully completed EOD trade journal sync for {today_str}.")
         except Exception as e:

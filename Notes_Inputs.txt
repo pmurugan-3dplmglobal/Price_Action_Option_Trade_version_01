@@ -1,0 +1,24 @@
+Don't make any change directly lets discuss (add any point/idea ) finally we can implement
+Read :DOCUMENTATION.yaml/DOCUMENTATION_STOCK.yaml for understanding 
+
+
+Rule : Skip completed for coding purpose , read rest and mark  as completed if implemented .
+
+Bug:1  : Comlpleted 
+i have an active position  BAJAJFINSV26AUG1920PE	kite	USER_OVERRIDE	50	53.02	70.4			22.9	300	ACTIVE	-8130.00 (-54.20%)	Edit , why SL is not triggered yet ,though stock is trading below SL now 
+
+Will do following change after 4.00 pM toady
+Feature:1  : plan : inprogress
+
+we have rule on monitoring tool to skip the monitoring at 9:15 to 9:45
+i want to modify this to 2 use-case/feature 
+1) separate SL monitor ;Skip the SL  till 9:45 then after that actively monitor (at start lets say 9.45, if it trading below SL & previous candle closed blow SL  & current candle trading below SL > then immediate Exit else monitor )
+2) separate Target monitor ; Exit at T1- buffer(1/2 point based strike value) on market opening ; so we might exit on good profit in flexuation 
+
+
+Feature:2  : plan : inprogress
+
+on daily export the value from scan tap 
+
+then on that csv file read each row > run the underlying spot stock update on  the colum (right side new) Bull or bear trent next colum spot T1 value : all based on our tratergy 
+it shoul not affect the existing system ,separate feature

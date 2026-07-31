@@ -848,8 +848,61 @@ HTML_TEMPLATE = """
                     btnEl.textContent = 'BUY';
                     btnEl.style.background = '#2ea043';
                 }
-            }
         }
+
+        window.manualExitPosition = async function(btnEl, contract, engine) {
+            if (!confirm(`Confirm Manual EXIT for ${contract}?`)) return;
+            if (btnEl) {
+                btnEl.disabled = true;
+                btnEl.textContent = 'EXITING...';
+                btnEl.style.background = '#8b949e';
+            }
+            try {
+                const r = await fetch('/api/exit-position', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({contract, symbol: contract, engine})
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    showToast(d.message || `Position EXITED for ${contract}`, 'success');
+                    setTimeout(refreshData, 500);
+                } else {
+                    showToast(`Exit failed: ${d.error || 'unknown error'}`, 'error');
+                    if (btnEl) {
+                        btnEl.disabled = false;
+                        btnEl.textContent = 'EXIT';
+                        btnEl.style.background = '#da3633';
+                    }
+                }
+            } catch(e) {
+                showToast(`Network error: ${e.message}`, 'error');
+                if (btnEl) {
+                    btnEl.disabled = false;
+                    btnEl.textContent = 'EXIT';
+                    btnEl.style.background = '#da3633';
+                }
+            }
+        };
+
+        window.manualExitAllPositions = async function() {
+            if (!confirm('Are you sure you want to EXIT ALL active positions?')) return;
+            try {
+                const r = await fetch('/api/exit-all-positions', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+                const d = await r.json();
+                if (d.ok) {
+                    showToast(d.message || 'All active positions EXITED', 'success');
+                    setTimeout(refreshData, 500);
+                } else {
+                    showToast(`Exit all failed: ${d.error || 'unknown error'}`, 'error');
+                }
+            } catch(e) {
+                showToast(`Network error: ${e.message}`, 'error');
+            }
+        };
 
         async function runNegationAnalysis() {
             const symbol = (document.getElementById('an-symbol') || {}).value || '';
@@ -1270,7 +1323,8 @@ HTML_TEMPLATE = """
                         t3Cell = `<td>${t3v}</td>`;
                         const canEdit = st === 'active';
                         if (canEdit) {
-                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button></td>`;
+                            const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button><button class="btn-exit" style="background:#da3633;color:#fff;border:none;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;" onclick="manualExitPosition(this,'${t.symbol||''}','${eng2}')">EXIT</button></td>`;
                         } else {
                             actCell = `<td></td>`;
                         }
@@ -1949,11 +2003,12 @@ HTML_TEMPLATE = """
                 <div class="section-panel">
                     <div class="section-header">
                         <span>Positions</span>
-                        <div style="display:flex;gap:4px;">
+                        <div style="display:flex;gap:4px;align-items:center;">
                             <button class="pos-filter-btn active" onclick="setFilter('position','active')">Active</button>
                             <button class="pos-filter-btn" onclick="setFilter('position','completed')">Completed</button>
                             <button class="pos-filter-btn" onclick="setFilter('position','sl_hit')">SL Hit</button>
                             <button class="pos-filter-btn" onclick="setFilter('position','all')">All</button>
+                            <button class="btn-exit-all" onclick="manualExitAllPositions()" style="padding:2px 10px;background:#da3633;border:1px solid #f85149;color:#fff;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600;margin-left:8px;">EXIT ALL</button>
                         </div>
                     </div>
                     <div id="active-positions-body"><p class="empty-state">No positions</p></div>
@@ -2593,6 +2648,110 @@ def api_buy_scanned_trade():
         })
     except Exception as e:
         logging.error(f"1-Click Buy API failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+# ──────────────────────────────────────────────
+#  MANUAL EXIT POSITION API (SINGLE & ALL)
+# ──────────────────────────────────────────────
+@app.route("/api/exit-position", methods=["POST"])
+def api_exit_position():
+    try:
+        data = request.json or {}
+        symbol = data.get("symbol", "")
+        contract = data.get("contract") or symbol
+        engine = data.get("engine", "nifty50")
+        
+        if not symbol and not contract:
+            return jsonify({"ok": False, "error": "Symbol or contract name required"}), 400
+
+        target_str = str(contract or symbol).replace(" ", "").upper()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        all_t = trade_db.get_all_trades()
+        exited_ids = []
+        for t in all_t:
+            t_sym = str(t.get("symbol") or "").replace(" ", "").upper()
+            t_cnt = str(t.get("contract") or "").replace(" ", "").upper()
+            if t.get("status") == "ACTIVE" and (target_str in (t_sym, t_cnt) or t_sym in target_str or t_cnt in target_str):
+                trade_db.update_trade(t["id"], {
+                    "status": "USER_EXIT",
+                    "exit_time": now_str,
+                    "result": "USER_EXIT",
+                    "updated_at": now_str
+                })
+                exited_ids.append(t["id"])
+
+        global _kite_session
+        if _kite_session:
+            try:
+                c_str = target_str
+                if "SENSEX" in c_str or "BSE" in c_str:
+                    exch = "BFO"
+                elif "CE" in c_str or "PE" in c_str or "NIFTY" in c_str or "BANK" in c_str:
+                    exch = "NFO"
+                else:
+                    exch = "NSE"
+                
+                pos_obj = {
+                    "contract": contract,
+                    "symbol": symbol,
+                    "exchange": exch,
+                    "quantity": data.get("quantity", 0)
+                }
+                from common.trading_core import close_position as shared_close
+                shared_close(_kite_session, pos_obj, True)
+            except Exception as k_err:
+                logging.warning(f"Live exit execution warning for {contract}: {k_err}")
+
+        for disp_path in [SCAN_DISPLAY_FILE, SCAN_DISPLAY_INDEX_FILE]:
+            if os.path.exists(disp_path):
+                try:
+                    with open(disp_path, "r", encoding="utf-8") as f:
+                        sd = json.load(f)
+                    sd["active_positions"] = [p for p in sd.get("active_positions", []) if str(p.get("contract") or p.get("symbol")).replace(" ", "").upper() != target_str]
+                    sd["active_live"] = [p for p in sd.get("active_live", []) if str(p.get("contract") or p.get("symbol")).replace(" ", "").upper() != target_str]
+                    with open(disp_path, "w", encoding="utf-8") as f:
+                        json.dump(sd, f, indent=2)
+                except Exception as e:
+                    pass
+
+        return jsonify({"ok": True, "message": f"Manual EXIT executed for {contract or symbol}"})
+    except Exception as e:
+        logging.error(f"Manual Exit API failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/exit-all-positions", methods=["POST"])
+def api_exit_all_positions():
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        all_t = trade_db.get_all_trades()
+        exited_count = 0
+        for t in all_t:
+            if t.get("status") == "ACTIVE":
+                trade_db.update_trade(t["id"], {
+                    "status": "USER_EXIT",
+                    "exit_time": now_str,
+                    "result": "USER_EXIT",
+                    "updated_at": now_str
+                })
+                exited_count += 1
+
+        for disp_path in [SCAN_DISPLAY_FILE, SCAN_DISPLAY_INDEX_FILE]:
+            if os.path.exists(disp_path):
+                try:
+                    with open(disp_path, "r", encoding="utf-8") as f:
+                        sd = json.load(f)
+                    sd["active_positions"] = []
+                    sd["active_live"] = []
+                    with open(disp_path, "w", encoding="utf-8") as f:
+                        json.dump(sd, f, indent=2)
+                except Exception as e:
+                    pass
+
+        return jsonify({"ok": True, "message": f"Successfully EXITED all ({exited_count}) active positions"})
+    except Exception as e:
+        logging.error(f"Exit All API failed: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 EXPORT_STATE_FILE = "output/monitor/export_state.json"

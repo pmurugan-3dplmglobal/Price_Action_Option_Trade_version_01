@@ -6,3 +6,4 @@ input/*.txt
 input/kite_access_token.txt
 .DS_Store
 *.log
+scratch/

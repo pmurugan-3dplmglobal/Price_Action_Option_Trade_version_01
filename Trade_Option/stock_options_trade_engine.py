@@ -484,10 +484,22 @@ def main_scan_loop(kite):
                                 if sym in ACTIVE_POSITIONS:
                                     target_pos = ACTIVE_POSITIONS[sym]
                                 else:
+                                    best_pos = None
+                                    best_len = -1
                                     for k, p in ACTIVE_POSITIONS.items():
-                                        if p.get("contract") == sym or p.get("symbol") == sym or sym in k:
-                                            target_pos = p
+                                        p_contract = str(p.get("contract") or "").replace(" ", "").upper()
+                                        p_symbol = str(p.get("symbol") or "").replace(" ", "").upper()
+                                        k_clean = str(k).replace(" ", "").upper()
+                                        if p_contract == sym or p_symbol == sym or k_clean == sym:
+                                            best_pos = p
                                             break
+                                        if sym in p_contract and len(p_contract) > best_len:
+                                            best_pos = p
+                                            best_len = len(p_contract)
+                                        elif sym in p_symbol and len(p_symbol) > best_len:
+                                            best_pos = p
+                                            best_len = len(p_symbol)
+                                    target_pos = best_pos
                                 if target_pos:
                                     changed = False
                                     for key in ("current_sl", "t1", "t2", "t3"):
@@ -499,7 +511,7 @@ def main_scan_loop(kite):
                                         if tid:
                                             trade_db.update_trade(tid, {k: target_pos[k] for k in ("current_sl", "t1", "t2", "t3") if k in target_pos})
                                         logging.info(f"[OVERRIDE] Applied SL/T for {target_pos.get('contract', sym)}: SL={target_pos.get('current_sl')} T1={target_pos.get('t1')} T2={target_pos.get('t2')} T3={target_pos.get('t3')}")
-                            save_state()
+                        save_state()
                 except Exception as e:
                     logging.warning(f"Override apply failed: {e}")
             logging.info("[BEAT] Starting Nifty 50 scan cycle...")
