@@ -967,7 +967,18 @@ def get_fetch_timeframe(timeframe_str):
 
 def fetch_and_resample_candles(kite, token, from_date, to_date, timeframe_str):
     fetch_tf = get_fetch_timeframe(timeframe_str)
-    raw = kite.historical_data(token, from_date, to_date, fetch_tf)
+    raw = None
+    for attempt in range(4):
+        try:
+            raw = kite.historical_data(token, from_date, to_date, fetch_tf)
+            break
+        except Exception as e:
+            if "Too many requests" in str(e) or "429" in str(e):
+                time.sleep(0.3 * (attempt + 1))
+            else:
+                raise e
+    if raw is None:
+        raw = kite.historical_data(token, from_date, to_date, fetch_tf)
     df = pd.DataFrame(raw)
     return resample_timeframe(df, timeframe_str)
 

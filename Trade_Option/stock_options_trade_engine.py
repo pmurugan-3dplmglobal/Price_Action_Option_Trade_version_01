@@ -287,7 +287,7 @@ def run_scan_cycle(kite):
     scan_order = sorted(STOCK_REGISTRY.keys())
     temp_stored_trades = []
 
-    with ThreadPoolExecutor(max_workers=15) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {}
         for symbol in scan_order:
             config = STOCK_REGISTRY[symbol]
