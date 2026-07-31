@@ -12,7 +12,8 @@ from trading_core import (
     load_kite_session,
     close_position as shared_close_position,
     close_stock_position as shared_close_stock_position,
-    clear_executed_exit
+    clear_executed_exit,
+    log_to_journal
 )
 
 app = Flask(__name__)
@@ -493,12 +494,50 @@ def refresh_data():
                             merged.append(pos_item)
 
                             if scan_sl:
+                                def _safe_float(v):
+                                    try:
+                                        if v is None:
+                                            return 0.0
+                                        s = str(v).strip()
+                                        return float(s) if s not in ("", "N/A", "None") else 0.0
+                                    except (TypeError, ValueError):
+                                        return 0.0
+
+                                def _t1_early_buffer(v):
+                                    if v <= 0:
+                                        return 0.0
+                                    if v <= 50:
+                                        return max(0.50, round(v * 0.015, 2))
+                                    elif v <= 200:
+                                        return max(1.00, round(v * 0.015, 2))
+                                    else:
+                                        return max(2.00, round(v * 0.010, 2))
+
+                                def _failsafe_exit_mark(action, status, details, exit_price):
+                                    entry_s = entry_pr if entry_pr > 0 else float(scan_sl.get("entry_spot") or 0)
+                                    pnl = ((exit_price - entry_s) / entry_s * 100) if entry_s else 0
+                                    if tid:
+                                        trade_db.update_trade(tid, {
+                                            "status": status,
+                                            "exit_time": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                            "pnl_percent": round(pnl, 2),
+                                            "details": details
+                                        })
+                                    try:
+                                        log_to_journal(contract_name, scan_sl.get("pattern", "SCAN_LINKED"), "15minute",
+                                                       action, "CLOSED", details, pnl,
+                                                       entry=entry_s, sl=sl_val,
+                                                       target=t1_val if t1_val else t3_val,
+                                                       event_time=dt.now().strftime("%Y-%m-%d %H:%M:%S"))
+                                    except Exception:
+                                        pass
+
                                 ltp_val = live_ltp
-                                sl_val = float(scan_sl.get("current_sl", 0))
-                                t1_val = float(scan_sl.get("t1", 0))
-                                t2_val = float(scan_sl.get("t2", 0))
-                                t3_val = float(scan_sl.get("t3", 0))
-                                t_stage = int(scan_sl.get("trailing_stage", 0))
+                                sl_val = _safe_float(scan_sl.get("current_sl"))
+                                t1_val = _safe_float(scan_sl.get("t1"))
+                                t2_val = _safe_float(scan_sl.get("t2"))
+                                t3_val = _safe_float(scan_sl.get("t3"))
+                                t_stage = int(scan_sl.get("trailing_stage") or 0)
                                 tid = scan_sl.get("id")
 
                                 clean_sym = str(contract_name).replace(" ", "").upper()
@@ -539,11 +578,22 @@ def refresh_data():
                                     logging.warning(f"[FAILSAFE MONITOR EXIT SL CONFIRMED] {contract_name} LTP={ltp_val} <= Buffered SL={sl_buffered} (Prev Close Below: {prev_closed_below}, Deep Break: {is_deep_break})")
                                     pos_obj = {"contract": contract_name, "position_size": qty, "quantity": qty}
                                     shared_close_position(_kite_session, pos_obj, True, p.get("product"))
+                                    _failsafe_exit_mark("EXIT_SL", "SL_HIT",
+                                                        f"SL hit [{('CANDLE_CLOSE_SL' if prev_closed_below else 'EMERGENCY_HARD_SL')}] | LTP {ltp_val:.2f} | SL {sl_val:.2f}", ltp_val)
                                 # 2. Check T3 Target Hit Exit
                                 elif ltp_val > 0 and t3_val > 0 and ltp_val >= t3_val:
                                     logging.info(f"[FAILSAFE MONITOR EXIT T3] {contract_name} LTP={ltp_val} >= T3={t3_val}")
                                     pos_obj = {"contract": contract_name, "position_size": qty, "quantity": qty}
                                     shared_close_position(_kite_session, pos_obj, True, p.get("product"))
+                                    _failsafe_exit_mark("EXIT_T3", "TARGET_HIT",
+                                                        f"T3 exit ({ltp_val:.2f} >= T3 {t3_val:.2f})", ltp_val)
+                                # 2b. Check T1 Target Exit (No T2/T3 -> Full exit 1-2 pts early on T1 touch)
+                                elif ltp_val > 0 and t1_val > 0 and t2_val <= 0 and t3_val <= 0 and ltp_val >= (t1_val - _t1_early_buffer(t1_val)):
+                                    logging.warning(f"[FAILSAFE MONITOR EXIT T1 (no T2/T3)] {contract_name} LTP={ltp_val} >= T1-buffer={t1_val - _t1_early_buffer(t1_val):.2f} (Target: {t1_val:.2f})")
+                                    pos_obj = {"contract": contract_name, "position_size": qty, "quantity": qty}
+                                    shared_close_position(_kite_session, pos_obj, True, p.get("product"))
+                                    _failsafe_exit_mark("EXIT_T1", "TARGET_HIT",
+                                                        f"T1 full exit ({ltp_val:.2f} >= {t1_val - _t1_early_buffer(t1_val):.2f}, no T2/T3)", ltp_val)
                                 # Track highest price reached for position
                                 prev_high = float(scan_sl.get("high_price") or 0)
                                 pos_high = max(live_ltp, prev_high)
