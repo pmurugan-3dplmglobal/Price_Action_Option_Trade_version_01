@@ -2029,7 +2029,7 @@ def monitor_active_positions(kite, registry, positions_dict, lock, product_type,
         fs_start_t = datetime_time(9, 45)
 
     if dt.now().time() < fs_start_t:
-        logging.info(f"[FAILSAFE PAUSED BEFORE {failsafe_start_str} AM] Automated active position exit checks paused until {failsafe_start_str} AM.")
+        logging.debug(f"[FAILSAFE PAUSED BEFORE {failsafe_start_str} AM] Automated active position exit checks paused until {failsafe_start_str} AM.")
         return
 
     with lock:
