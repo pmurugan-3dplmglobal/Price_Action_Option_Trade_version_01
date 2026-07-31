@@ -793,18 +793,29 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         stage_status = "FRESH_ENTRY"
         priority_level = "HIGH_PRIORITY"
 
-        # Post-D 3-Tier Classification Filter
+        # Post-D 3-Tier Classification & Setup Freshness Filter
         after_d = df_entry.iloc[d_idx + 1 :]
+        candles_since_d = len(df_entry) - 1 - d_idx
+        latest_close = float(df_entry.iloc[-1]['close'])
+
+        # Rule 1: Discard stale setups older than 60 candles to wait for new setup in next cycle
+        if candles_since_d > 60:
+            continue
+
+        # Rule 2: Discard if current price closed below SL floor line
+        if latest_close <= invalidation:
+            continue
+
         if not after_d.empty:
-            # 1. Discard if SL hit after D (A.low - buffer)
+            # 3. Discard if SL hit in any candle after D (A.low - buffer)
             if float(after_d['close'].min()) <= invalidation:
                 continue
-            # 2. Check if T1 has been reached after D
+            # 4. Check if T1 has been reached after D
             if float(after_d['close'].max()) >= t1:
-                # If T3 reached or T2 reached or no T2/T3 available -> All targets completed
+                # If T3 reached or T2 reached or no T2/T3 available -> All targets completed -> Discard
                 if (t3 is not None and float(after_d['close'].max()) >= t3) or t2 is None or float(after_d['close'].max()) >= t2:
                     continue
-                # T1 was hit, but T2/T3 is still pending -> Qualifies as LOW PRIORITY T2 Continuation
+                # T1 was hit, but T2/T3 is still pending -> Qualifies as LOW PRIORITY T2 Continuation if intact
                 stage_status = "T2_CONTINUATION"
                 priority_level = "LOW_PRIORITY"
                 sl_val = t1  # Trailed SL to T1 level to protect banked gains
