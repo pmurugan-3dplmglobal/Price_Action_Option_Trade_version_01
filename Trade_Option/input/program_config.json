@@ -18,12 +18,12 @@
     "strike_range": 0
   },
   "nifty50": {
-    "timeframe_entry": "75min",
-    "timeframe_anchor": "75min",
+    "timeframe_entry": "30minute",
+    "timeframe_anchor": "30minute",
     "lookback_days": 200,
     "scan_interval": 30,
     "risk_percent": 10,
     "capital": 100000,
-    "strike_range": 0
+    "strike_range": 1
   }
 }
