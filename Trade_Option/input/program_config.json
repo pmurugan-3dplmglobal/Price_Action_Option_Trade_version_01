@@ -11,7 +11,7 @@
   "index": {
     "timeframe_entry": "15minute",
     "timeframe_anchor": "15minute",
-    "lookback_days": 100,
+    "lookback_days": 30,
     "scan_interval": 15,
     "risk_percent": 1,
     "capital": 100000,
@@ -20,7 +20,7 @@
   "nifty50": {
     "timeframe_entry": "30minute",
     "timeframe_anchor": "30minute",
-    "lookback_days": 200,
+    "lookback_days": 30,
     "scan_interval": 30,
     "risk_percent": 10,
     "capital": 100000,
