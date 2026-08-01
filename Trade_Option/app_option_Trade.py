@@ -2330,11 +2330,14 @@ def _format_float(val, dec=2):
 def api_scan_export():
     try:
         import io
+        from spot_enricher import extract_underlying_symbol, evaluate_spot_trend_and_t1
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["Symbol", "Contract", "Side", "Entry", "SL", "T1", "T2", "T3",
-                         "AncherT", "EntryTime", "Result", "CF", "RR", "Engine", "Status"])
+                         "AncherT", "EntryTime", "Result", "CF", "RR", "Engine", "Status",
+                         "Spot_Trend", "Spot_T1_Target"])
         files = [("Nifty 50", SCAN_DISPLAY_FILE), ("Index", SCAN_DISPLAY_INDEX_FILE)]
+        spot_eval_cache = {}
         for label, path in files:
             full = path if os.path.isabs(path) else os.path.join(BASE_DIR, path)
             if not os.path.exists(full):

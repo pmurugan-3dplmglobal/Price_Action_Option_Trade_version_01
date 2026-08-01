@@ -2268,11 +2268,14 @@ def _format_float(val, dec=2):
 def api_scan_export():
     try:
         import io
+        from spot_enricher import extract_underlying_symbol, evaluate_spot_trend_and_t1
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["Symbol", "Contract", "Side", "Entry", "SL", "T1", "T2", "T3",
-                         "AncherT", "EntryTime", "Result", "CF", "RR", "Engine", "Status"])
+                         "AncherT", "EntryTime", "Result", "CF", "RR", "Engine", "Status",
+                         "Spot_Trend", "Spot_T1_Target"])
         files = [("Nifty 50", SCAN_DISPLAY_FILE), ("Index", SCAN_DISPLAY_INDEX_FILE)]
+        spot_eval_cache = {}
         for label, path in files:
             full = os.path.join(BASE_DIR, path)
             if not os.path.exists(full):
@@ -2281,6 +2284,13 @@ def api_scan_export():
                 data = json.load(f)
             for section_name, status_tag in [("staged_trades", "Staged"), ("active_live", "Active"), ("carry_forward", "CarryFwd")]:
                 for t in data.get(section_name, []):
+                    raw_sym = t.get("contract") or t.get("symbol") or ""
+                    underlying = extract_underlying_symbol(raw_sym)
+                    if underlying and underlying not in spot_eval_cache:
+                        spot_eval_cache[underlying] = evaluate_spot_trend_and_t1(None, underlying)
+                    spot_trend, spot_t1 = spot_eval_cache.get(underlying, ("N/A", "N/A"))
+                    formatted_spot_t1 = _format_float(spot_t1) if isinstance(spot_t1, (int, float)) else str(spot_t1)
+
                     writer.writerow([
                         t.get("symbol", ""),
                         t.get("contract", ""),
@@ -2296,7 +2306,9 @@ def api_scan_export():
                         "Yes" if t.get("carry_forward") else "No",
                         _format_float(t.get("rr")),
                         label,
-                        status_tag
+                        status_tag,
+                        spot_trend,
+                        formatted_spot_t1
                     ])
         csv_bytes = output.getvalue().encode("utf-8-sig")
         return Response(csv_bytes, mimetype="text/csv",
