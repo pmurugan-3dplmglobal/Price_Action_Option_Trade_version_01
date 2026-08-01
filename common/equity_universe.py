@@ -12,7 +12,7 @@ NIFTY50_SYMBOLS = [
     "BPCL", "BRITANNIA", "CIPLA", "COALINDIA", "DRREDDY",
     "EICHERMOT", "ETERNAL", "GRASIM", "HCLTECH", "HDFCBANK",
     "HDFCLIFE", "HEROMOTOCO", "HINDALCO", "HINDUNILVR", "ICICIBANK",
-    "INDUSINDBK", "INFY", "ITC", "JWSSTEEL", "KOTAKBANK",
+    "INDUSINDBK", "INFY", "ITC", "JSWSTEEL", "KOTAKBANK",
     "LT", "LTIM", "M&M", "MARUTI", "NESTLEIND",
     "NTPC", "ONGC", "POWERGRID", "RELIANCE", "SBILIFE",
     "SBIN", "SHRIRAMFIN", "SUNPHARMA", "TATACONSUM", "TATAMOTORS",
@@ -71,6 +71,48 @@ INDICES_REGISTRY_MAP = {
     "NIFTY_MIDCAP_100": NIFTY_MIDCAP100_SYMBOLS,
     "NIFTY_SMALLCAP_250": NIFTY_SMALLCAP250_SYMBOLS
 }
+
+# ──────────────────────────────────────────────
+#  TOKEN RESOLUTION & UNIVERSE LOOKUP
+# ──────────────────────────────────────────────
+
+_NSE_TOKEN_CACHE = {}
+
+def get_universe_symbols_and_tokens(kite=None, target_index_name="NIFTY50"):
+    """
+    Returns (symbols_list, token_map) for requested index universe.
+    Integrates with Kite Connect API to resolve instrument tokens dynamically.
+    """
+    global _NSE_TOKEN_CACHE
+    from trading_core import STOCK_REGISTRY
+
+    symbols = INDICES_REGISTRY_MAP.get(target_index_name)
+    if not symbols:
+        symbols = sorted(list(STOCK_REGISTRY.keys()))
+
+    token_map = {}
+    for sym in symbols:
+        if sym in STOCK_REGISTRY and STOCK_REGISTRY[sym].get("token"):
+            token_map[sym] = STOCK_REGISTRY[sym]["token"]
+
+    missing_symbols = [s for s in symbols if s not in token_map or token_map[s] == 0]
+    if missing_symbols and kite:
+        if not _NSE_TOKEN_CACHE:
+            try:
+                logging.info(f"Fetching NSE instrument master for universe '{target_index_name}' ({len(missing_symbols)} missing tokens)...")
+                insts = kite.instruments("NSE")
+                for item in insts:
+                    if item.get("segment") == "NSE":
+                        _NSE_TOKEN_CACHE[item["tradingsymbol"].strip()] = int(item["instrument_token"])
+                logging.info(f"Cached {len(_NSE_TOKEN_CACHE)} NSE instrument tokens")
+            except Exception as e:
+                logging.error(f"Failed to fetch NSE instruments for token map: {e}")
+
+        for sym in missing_symbols:
+            if sym in _NSE_TOKEN_CACHE:
+                token_map[sym] = _NSE_TOKEN_CACHE[sym]
+
+    return symbols, token_map
 
 # ──────────────────────────────────────────────
 #  LIQUIDITY & TURNOVER SHIELD

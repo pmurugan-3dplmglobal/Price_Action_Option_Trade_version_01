@@ -160,3 +160,34 @@ issues:
       Added interactive green BUY button to Scan Tab table in app_option_Trade.py (Port 5050) and app_Sock_Trade.py (Port 5051), backed by /api/buy-scanned-trade API endpoint with dynamic exchange resolution and automatic BOUGHT status protection against double-buying.
     status: RESOLVED
 
+  - id: FEATURE-010
+    title: Dual Monitoring Split (09:15 AM Target Exit vs 09:45 AM SL Failsafe)
+    severity: ENHANCEMENT
+    category: Risk Management & Strategy Execution
+    date_reported: "2026-08-01"
+    symptom: |
+      Single monitoring loop evaluated both SL and Target simultaneously during volatile 09:15-09:45 AM opening window, risking premature SL shakeouts.
+    root_cause: |
+      Need to separate Target monitoring (active from 09:15 AM open) from SL monitoring (deferred to 09:45 AM+ with 3-way confirmation).
+    affected_files:
+      - common/trading_core.py
+    resolution: |
+      Updated monitor_active_positions in common/trading_core.py: Target monitoring remains active from 09:15 AM. SL monitoring skips 09:15-09:45 AM window, evaluates a 3-way failsafe check at 09:45 AM (LTP < SL & prev candle closed < SL & current candle trading < SL), then resumes continuous SL monitoring after 09:45 AM.
+    status: RESOLVED
+
+  - id: FEATURE-011
+    title: Non-Intrusive Scan Export Spot Trend & Target Annotator Utility
+    severity: ENHANCEMENT
+    category: Data Export & Analysis
+    date_reported: "2026-08-01"
+    symptom: |
+      Scan exports lacked underlying spot stock trend and spot T1 target metrics.
+    root_cause: |
+      Need a separate, non-intrusive post-processing utility to enrich scan export CSV files without modifying core engines.
+    affected_files:
+      - common/spot_enricher.py
+    resolution: |
+      Created common/spot_enricher.py utility module. It reads exported scan CSVs, extracts underlying symbols, evaluates spot trend (BULL/BEAR) and spot T1 target using Negation Theory, and appends Spot_Trend and Spot_T1_Target columns to an enriched CSV output file.
+    status: RESOLVED
+
+

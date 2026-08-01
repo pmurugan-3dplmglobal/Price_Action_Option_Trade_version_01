@@ -2151,24 +2151,41 @@ def monitor_active_positions(kite, registry, positions_dict, lock, product_type,
                     positions_dict[sym]["candle_tf_time"] = str(event_time) if event_time else ""
                     positions_dict[sym]["timeframe"] = pos_tf
 
-            # 1) Closing-Basis SL Evaluation (including delayed-start catch-up for past closed candles)
-            if current_sl > 0:
-                entry_time_str = str(pos.get("entry_time", ""))
-                # Scan completed candles in df to check if any closed below SL
-                for idx in range(len(df)):
-                    c_row = df.iloc[idx]
-                    c_date = str(c_row.get('date', ''))
-                    if entry_time_str and c_date < entry_time_str[:16]:
-                        continue
-                    if float(c_row['close']) <= current_sl:
-                        sl_hit = True
-                        sl_reason = f"CANDLE_CLOSE_SL ({pos_tf} Bar @ {c_date})"
-                        cp = float(c_row['close'])
-                        event_time = c_row.get('date')
-                        break
+            # 1) SL Evaluation (Separated SL Monitor: Skipped 09:15-09:45 AM, Active at 09:45 AM+)
+            now_time_str = dt.now().strftime("%H:%M")
+            is_before_0945 = now_time_str < "09:45"
+            is_start_0945 = "09:45" <= now_time_str <= "09:47"
 
-            # 2) Emergency Hard Stop / Direct LTP evaluation
-            if not sl_hit and current_sl > 0 and live_ltp > 0:
+            if current_sl > 0:
+                if is_before_0945:
+                    # Target monitoring runs from 09:15 AM, but SL is skipped until 09:45 AM
+                    pass
+                elif is_start_0945:
+                    # 09:45 AM Failsafe Check: If trading below SL & prev candle closed below SL & current candle trading below SL
+                    prev_closed_below = (len(df) >= 2 and float(df.iloc[-2]['close']) <= current_sl)
+                    curr_below = (live_ltp > 0 and live_ltp <= current_sl) or (float(df.iloc[-1]['close']) <= current_sl)
+                    if curr_below and prev_closed_below:
+                        sl_hit = True
+                        sl_reason = f"SL_FAILSAFE_0945_TRIGGER (LTP {live_ltp:.2f} <= {current_sl:.2f} & Prev Bar Closed Below)"
+                        cp = live_ltp if live_ltp > 0 else float(df.iloc[-1]['close'])
+                        event_time = last.get('date')
+                else:
+                    # Normal Active SL Monitoring after 09:45 AM
+                    entry_time_str = str(pos.get("entry_time", ""))
+                    for idx in range(len(df)):
+                        c_row = df.iloc[idx]
+                        c_date = str(c_row.get('date', ''))
+                        if entry_time_str and c_date < entry_time_str[:16]:
+                            continue
+                        if float(c_row['close']) <= current_sl:
+                            sl_hit = True
+                            sl_reason = f"CANDLE_CLOSE_SL ({pos_tf} Bar @ {c_date})"
+                            cp = float(c_row['close'])
+                            event_time = c_row.get('date')
+                            break
+
+            # 2) Emergency Hard Stop / Direct LTP evaluation (Active after 09:45 AM)
+            if not sl_hit and current_sl > 0 and live_ltp > 0 and not is_before_0945:
                 if sl_mode == "tick_ltp" and live_ltp <= current_sl:
                     sl_hit = True
                     sl_reason = f"TICK_LTP_SL ({live_ltp})"

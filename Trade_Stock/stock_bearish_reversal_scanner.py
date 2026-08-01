@@ -59,6 +59,9 @@ from trading_core import (
     STOCK_REGISTRY,
     SUPER_STOCKS
 )
+from equity_universe import get_universe_symbols_and_tokens, is_liquid_cash_stock
+
+TARGET_INDEX = "NIFTY50"
 
 def run_scan(kite):
     effective_lookback = get_adaptive_lookback(TIMEFRAME_ENTRY, "STOCK_SPOT", LOOKBACK_DAYS)
@@ -69,7 +72,9 @@ def run_scan(kite):
     ]
     results = []
     results_lock = threading.Lock()
-    scan_order = sorted(STOCK_REGISTRY.keys())
+    symbols_list, token_map = get_universe_symbols_and_tokens(kite, TARGET_INDEX)
+    scan_order = sorted(symbols_list)
+    logging.info(f"Executing Bearish Scan for Universe '{TARGET_INDEX}' ({len(scan_order)} symbols) on timeframe '{TIMEFRAME_ENTRY}'...")
     tf_clean = str(TIMEFRAME_ENTRY).lower()
     if tf_clean in ["week", "weekly", "w", "1w", "day", "d", "1d"]:
         fetch_tf = "day"
@@ -93,11 +98,16 @@ def run_scan(kite):
     with ThreadPoolExecutor(max_workers=10) as pool:
         futures = {}
         for symbol in scan_order:
-            config = STOCK_REGISTRY[symbol]
+            tok = token_map.get(symbol, 0)
+            if not tok:
+                logging.warning(f"Skipping {symbol}: Instrument token missing")
+                with results_lock:
+                    results.append({"Symbol": symbol, "Pattern": "NO_TOKEN"})
+                continue
             futures[pool.submit(
-                lambda cfg=config: pd.DataFrame(kite.historical_data(cfg["token"], from_date, to_date, fetch_tf))
+                lambda t=tok: pd.DataFrame(kite.historical_data(t, from_date, to_date, fetch_tf))
             )] = symbol
-            time.sleep(0.3)
+            time.sleep(0.2)
         for f in as_completed(futures):
             symbol = futures[f]
             try:
@@ -111,6 +121,11 @@ def run_scan(kite):
             if df_e.empty:
                 with results_lock:
                     results.append({"Symbol": symbol, "Pattern": "NO_DATA"})
+                continue
+            if TARGET_INDEX != "NIFTY50" and not is_liquid_cash_stock(df_e):
+                logging.info(f"Skipping {symbol} - failed cash liquidity shield (low volume/turnover)")
+                with results_lock:
+                    results.append({"Symbol": symbol, "Pattern": "ILLIQUID_SKIPPED"})
                 continue
             df_a = df_e.copy()
             latest = df_e.iloc[-1]
@@ -242,6 +257,7 @@ def load_program_config():
             if "timeframe" in cfg:
                 globals().update({"TIMEFRAME_ENTRY": cfg["timeframe"], "TIMEFRAME_ANCHOR": cfg["timeframe"]})
             if "lookback_days" in cfg: globals().update({"LOOKBACK_DAYS": int(cfg["lookback_days"])})
+            if "target_index" in cfg: globals().update({"TARGET_INDEX": str(cfg["target_index"])})
     except Exception as e:
         logging.warning(f"Config load: {e}")
 

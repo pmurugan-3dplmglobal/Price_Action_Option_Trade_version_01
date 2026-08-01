@@ -4,12 +4,14 @@
   "daily": {
     "timeframe": "day",
     "lookback_days": 2000,
-    "product_type": "CNC"
+    "product_type": "CNC",
+    "target_index": "NIFTY50"
   },
   "bear_trade": {
     "timeframe": "day",
     "lookback_days": 2000,
-    "product_type": "CNC"
+    "product_type": "CNC",
+    "target_index": "NIFTY50"
   },
   "_backtest": false,
   "index": {
