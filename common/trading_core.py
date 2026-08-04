@@ -2829,7 +2829,7 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
         if float(intermediate_bars['close'].max()) > a_high:
             continue
 
-        pattern_type = det_result["Pattern"] if det_result else "BEAR_A_BCD_Breakout"
+        pattern_type = det_result["Pattern"] if det_result else "BEAR_BASE_ABCD"
         entry_candle = df_entry.iloc[d_idx]
         entry_close = float(entry_candle['close'])
         sl_val = round(a_high + max(0.50, a_high * 0.02), 2)
