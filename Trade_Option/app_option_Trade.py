@@ -2245,8 +2245,45 @@ HTML_TEMPLATE = """
         let tvChartInstance = null;
         let candleSeriesInstance = null;
 
-        async function openChartModal(contract, symbol, side, entry, sl, t1, t2, t3, pattern) {
-            currentChartParams = { contract, symbol, side, entry: parseFloat(entry)||0, sl: parseFloat(sl)||0, t1: parseFloat(t1)||0, t2: parseFloat(t2)||0, t3: parseFloat(t3)||0, pattern: pattern||'' };
+        function parseDateToUnix(dtStr) {
+            if (!dtStr || dtStr === '-') return 0;
+            try {
+                const parts = dtStr.trim().split(' ');
+                if (parts.length === 2) {
+                    const dateParts = parts[0].split('-');
+                    const timeParts = parts[1].split(':');
+                    if (dateParts.length === 3) {
+                        let yr = parseInt(dateParts[2]);
+                        if (yr < 100) yr += 2000;
+                        const month = parseInt(dateParts[1]) - 1;
+                        const day = parseInt(dateParts[0]);
+                        const hr = parseInt(timeParts[0] || 0);
+                        const min = parseInt(timeParts[1] || 0);
+                        return Math.floor(new Date(yr, month, day, hr, min).getTime() / 1000);
+                    }
+                }
+                return Math.floor(new Date(dtStr).getTime() / 1000);
+            } catch(e) { return 0; }
+        }
+
+        function findClosestCandleIndex(candles, targetTs) {
+            if (!targetTs || !candles || candles.length === 0) return -1;
+            let closestIdx = -1;
+            let minDiff = Infinity;
+            for (let i = 0; i < candles.length; i++) {
+                const diff = Math.abs(candles[i].time - targetTs);
+                if (diff < minDiff) { minDiff = diff; closestIdx = i; }
+            }
+            return closestIdx;
+        }
+
+        async function openChartModal(contract, symbol, side, entry, sl, t1, t2, t3, pattern, candle_a_time, entry_time) {
+            currentChartParams = { 
+                contract, symbol, side, 
+                entry: parseFloat(entry)||0, sl: parseFloat(sl)||0, 
+                t1: parseFloat(t1)||0, t2: parseFloat(t2)||0, t3: parseFloat(t3)||0, 
+                pattern: pattern||'', candle_a_time: candle_a_time||'', entry_time: entry_time||'' 
+            };
             currentChartScope = 'option';
             currentChartTf = '30minute';
             const tfSel = document.getElementById('modalTfSelect');
@@ -2281,7 +2318,7 @@ HTML_TEMPLATE = """
 
         async function loadChartDataAndRender() {
             if (!currentChartParams) return;
-            const { contract, symbol, side, entry, sl, t1, t2, t3, pattern } = currentChartParams;
+            const { contract, symbol, side, entry, sl, t1, t2, t3, pattern, candle_a_time, entry_time } = currentChartParams;
             const targetSymbol = currentChartScope === 'spot' ? (symbol || contract) : (contract || symbol);
             
             document.getElementById('modalChartTitle').innerText = `${currentChartScope === 'spot' ? '📈 Spot' : '📊 Option'}: ${targetSymbol} (${side || 'CE'})`;
@@ -2324,6 +2361,46 @@ HTML_TEMPLATE = """
                 });
 
                 candleSeriesInstance.setData(data.candles);
+
+                // ── Render A, B, C, D Text Markers ──
+                const candles = data.candles || [];
+                const markers = [];
+                if (candles.length > 0) {
+                    let idxA = findClosestCandleIndex(candles, parseDateToUnix(candle_a_time));
+                    let idxD = findClosestCandleIndex(candles, parseDateToUnix(entry_time));
+                    if (idxD === -1) idxD = candles.length - 1;
+                    if (idxA === -1 || idxA >= idxD) idxA = Math.max(0, idxD - 12);
+
+                    if (idxA >= 0 && idxD > idxA) {
+                        let idxB = idxA;
+                        let maxH = candles[idxA].high;
+                        for (let i = idxA; i < idxD; i++) {
+                            if (candles[i].high >= maxH) { maxH = candles[i].high; idxB = i; }
+                        }
+                        let idxC = idxB;
+                        let minL = candles[idxB].low;
+                        for (let i = idxB; i <= idxD; i++) {
+                            if (candles[i].low <= minL) { minL = candles[i].low; idxC = i; }
+                        }
+
+                        markers.push({ time: candles[idxA].time, position: 'belowBar', color: '#3fb950', shape: 'circle', text: 'A (Anchor)' });
+                        if (idxB !== idxA && idxB !== idxD) {
+                            markers.push({ time: candles[idxB].time, position: 'aboveBar', color: '#58a6ff', shape: 'square', text: 'B (Swing High)' });
+                        }
+                        if (idxC !== idxB && idxC !== idxD) {
+                            markers.push({ time: candles[idxC].time, position: 'belowBar', color: '#d29922', shape: 'circle', text: 'C (Retest)' });
+                        }
+                        markers.push({ time: candles[idxD].time, position: 'aboveBar', color: '#2ea043', shape: 'arrowUp', text: 'D (Entry)' });
+
+                        markers.sort((m1, m2) => m1.time - m2.time);
+                        const uniqueMarkers = [];
+                        const seenTimes = new Set();
+                        markers.forEach(m => {
+                            if (!seenTimes.has(m.time)) { seenTimes.add(m.time); uniqueMarkers.push(m); }
+                        });
+                        candleSeriesInstance.setMarkers(uniqueMarkers);
+                    }
+                }
 
                 if (entry > 0) {
                     candleSeriesInstance.createPriceLine({ price: entry, color: '#58a6ff', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `Entry: ${entry.toFixed(2)}` });
