@@ -1112,7 +1112,7 @@ HTML_TEMPLATE = """
 
             const filter = (document.getElementById('scan-engine-filter') || {}).value || 'all';
             let scanHtml = '';
-            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">AncherT</th><th onclick="sortTable(this,9)">EntryTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th><th style="text-align:center">Action</th>';
+            const colHeaders = '<th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Contract</th><th onclick="sortTable(this,2)">Side</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">AncherT</th><th onclick="sortTable(this,9)">EntryTime</th><th onclick="sortTable(this,10)">Result</th><th onclick="sortTable(this,11)">CF</th><th onclick="sortTable(this,12)">RR</th><th style="text-align:center">Chart</th><th style="text-align:center">Action</th>';
             function tradeRow(t, resultBadge, eng) {
                 const entry = t.entry_spot !== undefined && t.entry_spot !== null ? parseFloat(t.entry_spot).toFixed(2) : '-';
                 const sl = t.current_sl !== undefined && t.current_sl !== null ? parseFloat(t.current_sl).toFixed(2) : '-';
@@ -1157,15 +1157,15 @@ HTML_TEMPLATE = """
                 const cleanSymbol = (t.symbol || '').replace(/\s+/g, '').toUpperCase();
                 const isBought = activeContracts.has(cleanContract) || activeContracts.has(cleanSymbol);
                 
-                const chartBtn = `<button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||t.entry||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${res}')" style="background:#1f6feb;color:#ffffff;border:none;padding:4px 8px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px;margin-left:4px;">📈 Chart</button>`;
+                const chartCell = `<td style="text-align:center"><button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||t.entry||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${res}')" style="background:#1f6feb;color:#ffffff;border:none;padding:4px 8px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px;">📈 Chart</button></td>`;
                 let actCell = '';
                 if (isBought) {
-                    actCell = `<td style="text-align:center"><button disabled class="btn-bought" style="background:#238636;color:#ffffff;border:none;padding:4px 10px;border-radius:4px;font-weight:bold;cursor:not-allowed;font-size:11px">BOUGHT</button>${chartBtn}</td>`;
+                    actCell = '<td style="text-align:center"><button disabled class="btn-bought" style="background:#238636;color:#ffffff;border:none;padding:4px 10px;border-radius:4px;font-weight:bold;cursor:not-allowed;font-size:11px">BOUGHT</button></td>';
                 } else {
-                    actCell = `<td style="text-align:center"><button class="btn-buy" onclick="buyScannedTrade(this, '${t.symbol||''}', '${t.contract||''}', '${t.side||'CE'}', ${t.entry_spot||0}, ${t.current_sl||t.sl||0}, ${t.t1||0}, ${t.t2||0}, ${t.t3||0}, '${eng}', '${t.timeframe||''}')" style="background:#2ea043;color:#ffffff;border:none;padding:4px 12px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px">BUY</button>${chartBtn}</td>`;
+                    actCell = `<td style="text-align:center"><button class="btn-buy" onclick="buyScannedTrade(this, '${t.symbol||''}', '${t.contract||''}', '${t.side||'CE'}', ${t.entry_spot||0}, ${t.current_sl||t.sl||0}, ${t.t1||0}, ${t.t2||0}, ${t.t3||0}, '${eng}', '${t.timeframe||''}')" style="background:#2ea043;color:#ffffff;border:none;padding:4px 12px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px">BUY</button></td>`;
                 }
 
-                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td>${actCell}</tr>`;
+                return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td>${chartCell}${actCell}</tr>`;
             }
             const engines = filter === 'all' ? ['nifty50', 'index'] : [filter];
             engines.forEach(eng => {
@@ -1342,7 +1342,7 @@ HTML_TEMPLATE = """
                 });
             });
             if (mergedPositions.length) {
-                posHtml = '<table><thead><tr><th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Source</th><th onclick="sortTable(this,2)">Pattern</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">LTP</th><th onclick="sortTable(this,9)">Qty</th><th onclick="sortTable(this,10)">Status</th><th onclick="sortTable(this,11)">P&L</th><th>Act</th></tr></thead><tbody>';
+                posHtml = '<table><thead><tr><th onclick="sortTable(this,0)">Symbol</th><th onclick="sortTable(this,1)">Source</th><th onclick="sortTable(this,2)">Pattern</th><th onclick="sortTable(this,3)">Entry</th><th onclick="sortTable(this,4)">SL</th><th onclick="sortTable(this,5)">T1</th><th onclick="sortTable(this,6)">T2</th><th onclick="sortTable(this,7)">T3</th><th onclick="sortTable(this,8)">LTP</th><th onclick="sortTable(this,9)">Qty</th><th onclick="sortTable(this,10)">Status</th><th onclick="sortTable(this,11)">P&L</th><th style="text-align:center">Chart</th><th>Act</th></tr></thead><tbody>';
                 mergedPositions.forEach(t => {
                     const st = (t.status || '').toLowerCase();
                     let badge = 'badge-open';
@@ -1377,6 +1377,7 @@ HTML_TEMPLATE = """
                     const uid = 'pos_' + (t.symbol || 'no_sym') + '_' + (t.source || '');
                     const es = editStates[uid];
                     let slCell, t1Cell, t2Cell, t3Cell, actCell;
+                    const chartCellPos = `<td style="text-align:center"><button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${t.pattern||''}')" style="background:#1f6feb;color:#ffffff;border:none;padding:2px 6px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600;">📈 Chart</button></td>`;
                     if (es && es.active) {
                         const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
                         slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px" oninput="editStates['${uid}'].sl=this.value" onchange="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')"></td>`;
@@ -1390,15 +1391,14 @@ HTML_TEMPLATE = """
                         t2Cell = `<td>${t2v}</td>`;
                         t3Cell = `<td>${t3v}</td>`;
                         const canEdit = st === 'active';
-                        const chartBtnPos = `<button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${t.pattern||''}')" style="background:#1f6feb;color:#ffffff;border:none;padding:2px 6px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;">📈 Chart</button>`;
                         if (canEdit) {
                             const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
-                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.contract||t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button><button class="btn-exit" style="background:#da3633;color:#fff;border:none;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;" onclick="manualExitPosition(this,'${t.contract||t.symbol||''}','${eng2}')">EXIT</button>${chartBtnPos}</td>`;
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.contract||t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button><button class="btn-exit" style="background:#da3633;color:#fff;border:none;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;" onclick="manualExitPosition(this,'${t.contract||t.symbol||''}','${eng2}')">EXIT</button></td>`;
                         } else {
-                            actCell = `<td>${chartBtnPos}</td>`;
+                            actCell = `<td></td>`;
                         }
                     }
-                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${displayLtp || '-'}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnlStr !== '' ? `<span class="badge ${pnlBadge}">${pnlStr}</span>` : '-'}</td>${actCell}</tr>`;
+                    posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${displayLtp || '-'}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnlStr !== '' ? `<span class="badge ${pnlBadge}">${pnlStr}</span>` : '-'}</td>${chartCellPos}${actCell}</tr>`;
                 });
                 posHtml += '</tbody></table>';
             } else {
@@ -3058,8 +3058,14 @@ def api_get_chart_data():
             spot_token = STOCK_REGISTRY[contract]["token"]
             spot_symbol = contract
 
-        if chart_type == "spot" and spot_token:
-            target_token = spot_token
+        if chart_type == "spot":
+            try:
+                ltp_res = kite.ltp([f"NSE:{spot_symbol}"])
+                if ltp_res and f"NSE:{spot_symbol}" in ltp_res:
+                    spot_token = ltp_res[f"NSE:{spot_symbol}"]["instrument_token"]
+            except Exception:
+                pass
+            target_token = spot_token or token
             target_symbol = spot_symbol
             target_exchange = "NSE" if (spot_symbol in STOCK_REGISTRY or spot_symbol in ["NIFTY", "BANKNIFTY"]) else "BSE"
         else:
