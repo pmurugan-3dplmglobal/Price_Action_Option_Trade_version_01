@@ -151,8 +151,14 @@ def stop_program(prog_id):
             else:
                 os.kill(p.pid, signal.SIGTERM)
             processes.pop(prog_id, None)
-            return True
-    return False
+    script_file = PROGRAMS.get(prog_id, {}).get("file")
+    if script_file and os.name == "nt":
+        try:
+            ps_cmd = f"Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | Where-Object {{ $_.CommandLine -match '{script_file}' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}"
+            subprocess.run(["powershell.exe", "-Command", ps_cmd], capture_output=True)
+        except Exception as e:
+            logging.warning(f"System-wide kill for {prog_id} failed: {e}")
+    return True
 
 # ──────────────────────────────────────────────
 #  CONFIGURATION (program_config.json)
@@ -627,6 +633,7 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Trading Control Center</title>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script>
         // ── Filter State ──
         let journalFilter = 'all';
@@ -874,7 +881,7 @@ HTML_TEMPLATE = """
             }
         }
 
-        async function buyScannedTrade(btnEl, symbol, contract, side, entry, sl, t1, t2, t3, engine) {
+        async function buyScannedTrade(btnEl, symbol, contract, side, entry, sl, t1, t2, t3, engine, timeframe) {
             const dispName = contract || symbol;
             if (!confirm(`Confirm 1-Click BUY for ${dispName}?`)) return;
             if (btnEl) {
@@ -886,7 +893,7 @@ HTML_TEMPLATE = """
                 const r = await fetch('/api/buy-scanned-trade', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({symbol, contract, side, entry_spot: entry, current_sl: sl, t1, t2, t3, engine})
+                    body: JSON.stringify({symbol, contract, side, entry_spot: entry, current_sl: sl, t1, t2, t3, engine, timeframe})
                 });
                 const d = await r.json();
                 if (d.ok) {
@@ -1150,11 +1157,12 @@ HTML_TEMPLATE = """
                 const cleanSymbol = (t.symbol || '').replace(/\s+/g, '').toUpperCase();
                 const isBought = activeContracts.has(cleanContract) || activeContracts.has(cleanSymbol);
                 
+                const chartBtn = `<button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||t.entry||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${res}')" style="background:#1f6feb;color:#ffffff;border:none;padding:4px 8px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px;margin-left:4px;">📈 Chart</button>`;
                 let actCell = '';
                 if (isBought) {
-                    actCell = '<td style="text-align:center"><button disabled class="btn-bought" style="background:#238636;color:#ffffff;border:none;padding:4px 10px;border-radius:4px;font-weight:bold;cursor:not-allowed;font-size:11px">BOUGHT</button></td>';
+                    actCell = `<td style="text-align:center"><button disabled class="btn-bought" style="background:#238636;color:#ffffff;border:none;padding:4px 10px;border-radius:4px;font-weight:bold;cursor:not-allowed;font-size:11px">BOUGHT</button>${chartBtn}</td>`;
                 } else {
-                    actCell = `<td style="text-align:center"><button class="btn-buy" onclick="buyScannedTrade(this, '${t.symbol||''}', '${t.contract||''}', '${t.side||'CE'}', ${t.entry_spot||0}, ${t.current_sl||t.sl||0}, ${t.t1||0}, ${t.t2||0}, ${t.t3||0}, '${eng}')" style="background:#2ea043;color:#ffffff;border:none;padding:4px 12px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px">BUY</button></td>`;
+                    actCell = `<td style="text-align:center"><button class="btn-buy" onclick="buyScannedTrade(this, '${t.symbol||''}', '${t.contract||''}', '${t.side||'CE'}', ${t.entry_spot||0}, ${t.current_sl||t.sl||0}, ${t.t1||0}, ${t.t2||0}, ${t.t3||0}, '${eng}', '${t.timeframe||''}')" style="background:#2ea043;color:#ffffff;border:none;padding:4px 12px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px">BUY</button>${chartBtn}</td>`;
                 }
 
                 return `<tr><td>${t.symbol||''}</td><td style="font-size:11px">${t.contract||''}</td><td>${t.side||''}</td><td>${entry}</td><td>${sl}</td><td>${t1v}</td><td>${t2v}</td><td>${t3v}</td><td style="font-size:11px">${atFormatted}</td><td style="font-size:11px">${etFormatted}</td><td><span class="badge ${resultBadge}">${res}</span></td><td>${cf}</td><td>${rr}</td>${actCell}</tr>`;
@@ -1382,11 +1390,12 @@ HTML_TEMPLATE = """
                         t2Cell = `<td>${t2v}</td>`;
                         t3Cell = `<td>${t3v}</td>`;
                         const canEdit = st === 'active';
+                        const chartBtnPos = `<button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${t.pattern||''}')" style="background:#1f6feb;color:#ffffff;border:none;padding:2px 6px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;">📈 Chart</button>`;
                         if (canEdit) {
                             const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
-                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.contract||t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button><button class="btn-exit" style="background:#da3633;color:#fff;border:none;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;" onclick="manualExitPosition(this,'${t.contract||t.symbol||''}','${eng2}')">EXIT</button></td>`;
+                            actCell = `<td><button class="btn-edit" onclick="editRow('${uid}','${t.contract||t.symbol||''}','${slVal}','${t1v}','${t2v}','${t3v}')">Edit</button><button class="btn-exit" style="background:#da3633;color:#fff;border:none;padding:2px 8px;border-radius:4px;font-size:10px;cursor:pointer;margin-left:4px;font-weight:600;" onclick="manualExitPosition(this,'${t.contract||t.symbol||''}','${eng2}')">EXIT</button>${chartBtnPos}</td>`;
                         } else {
-                            actCell = `<td></td>`;
+                            actCell = `<td>${chartBtnPos}</td>`;
                         }
                     }
                     posHtml += `<tr><td><strong>${t.symbol}</strong></td><td>${t.source}</td><td><span class="badge badge-open">${t.pattern||''}</span></td><td>${entryVal}</td>${slCell}${t1Cell}${t2Cell}${t3Cell}<td>${displayLtp || '-'}</td><td>${qty}</td><td><span class="badge ${badge}">${stLabel}</span></td><td>${pnlStr !== '' ? `<span class="badge ${pnlBadge}">${pnlStr}</span>` : '-'}</td>${actCell}</tr>`;
@@ -2191,6 +2200,145 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- Interactive TradingView Chart Modal -->
+    <div id="chartModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:99999; justify-content:center; align-items:center;">
+        <div style="background:#161b22; border:1px solid #30363d; border-radius:8px; width:92%; max-width:1100px; height:85vh; display:flex; flex-direction:column; padding:15px; box-shadow:0 10px 30px rgba(0,0,0,0.7);">
+            <!-- Modal Header -->
+            <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #30363d; padding-bottom:10px; margin-bottom:10px;">
+                <div style="display:flex; align-items:center; gap:12px;">
+                    <h3 id="modalChartTitle" style="margin:0; color:#58a6ff; font-size:16px; font-weight:bold;">📈 Chart View</h3>
+                    <span id="modalChartBadge" style="background:#238636; color:#fff; padding:3px 8px; border-radius:4px; font-size:11px; font-weight:bold;">30m TF</span>
+                </div>
+                <!-- Scope Toggle Bar -->
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <button id="btnScopeOption" onclick="switchChartScope('option')" style="background:#1f6feb; color:#fff; border:none; padding:5px 12px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:12px;">📊 Option Contract Chart</button>
+                    <button id="btnScopeSpot" onclick="switchChartScope('spot')" style="background:#21262d; color:#8b949e; border:1px solid #30363d; padding:5px 12px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:12px;">📈 Underlying Spot Chart</button>
+                    <a id="modalKiteLink" href="#" target="_blank" style="background:#d29922; color:#000; text-decoration:none; padding:5px 12px; border-radius:4px; font-weight:bold; font-size:12px; display:inline-block;">Open in Zerodha Kite ↗</a>
+                    <button onclick="closeChartModal()" style="background:transparent; border:none; color:#8b949e; font-size:22px; cursor:pointer; padding:0 8px;">&times;</button>
+                </div>
+            </div>
+
+            <!-- Chart Canvas Container -->
+            <div id="tvChartContainer" style="flex:1; width:100%; position:relative; background:#0d1117; border-radius:6px; overflow:hidden;"></div>
+
+            <!-- Modal Footer Target Metrics -->
+            <div id="modalTradeInfo" style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid #30363d; padding-top:10px; margin-top:10px; font-size:12px; color:#c9d1d9; flex-wrap:wrap; gap:10px;">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentChartParams = null;
+        let currentChartScope = 'option';
+        let tvChartInstance = null;
+        let candleSeriesInstance = null;
+
+        async function openChartModal(contract, symbol, side, entry, sl, t1, t2, t3, pattern) {
+            currentChartParams = { contract, symbol, side, entry: parseFloat(entry)||0, sl: parseFloat(sl)||0, t1: parseFloat(t1)||0, t2: parseFloat(t2)||0, t3: parseFloat(t3)||0, pattern: pattern||'' };
+            currentChartScope = 'option';
+            document.getElementById('chartModal').style.display = 'flex';
+            await loadChartDataAndRender();
+        }
+
+        function closeChartModal() {
+            document.getElementById('chartModal').style.display = 'none';
+            if (tvChartInstance) {
+                tvChartInstance.remove();
+                tvChartInstance = null;
+            }
+        }
+
+        async function switchChartScope(scope) {
+            currentChartScope = scope;
+            document.getElementById('btnScopeOption').style.background = scope === 'option' ? '#1f6feb' : '#21262d';
+            document.getElementById('btnScopeOption').style.color = scope === 'option' ? '#ffffff' : '#8b949e';
+            document.getElementById('btnScopeSpot').style.background = scope === 'spot' ? '#1f6feb' : '#21262d';
+            document.getElementById('btnScopeSpot').style.color = scope === 'spot' ? '#ffffff' : '#8b949e';
+            await loadChartDataAndRender();
+        }
+
+        async function loadChartDataAndRender() {
+            if (!currentChartParams) return;
+            const { contract, symbol, side, entry, sl, t1, t2, t3, pattern } = currentChartParams;
+            const targetSymbol = currentChartScope === 'spot' ? (symbol || contract) : (contract || symbol);
+            
+            document.getElementById('modalChartTitle').innerText = `${currentChartScope === 'spot' ? '📈 Spot' : '📊 Option'}: ${targetSymbol} (${side || 'CE'})`;
+            
+            try {
+                const resp = await fetch(`/api/get-chart-data?symbol=${encodeURIComponent(targetSymbol)}&type=${currentChartScope}&timeframe=30minute`);
+                const data = await resp.json();
+                
+                if (!data.ok || !data.candles || data.candles.length === 0) {
+                    document.getElementById('tvChartContainer').innerHTML = `<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#f85149;font-weight:bold;">Error: ${data.error || 'Failed to fetch candles'}</div>`;
+                    return;
+                }
+
+                if (data.kite_url) {
+                    document.getElementById('modalKiteLink').href = data.kite_url;
+                }
+
+                const container = document.getElementById('tvChartContainer');
+                container.innerHTML = '';
+
+                if (typeof LightweightCharts === 'undefined') {
+                    container.innerHTML = `<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#f85149;">TradingView Library Loading... Please retry</div>`;
+                    return;
+                }
+
+                tvChartInstance = LightweightCharts.createChart(container, {
+                    width: container.clientWidth,
+                    height: container.clientHeight,
+                    layout: { backgroundColor: '#0d1117', textColor: '#c9d1d9' },
+                    grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+                    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+                    rightPriceScale: { borderColor: '#30363d' },
+                    timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false }
+                });
+
+                candleSeriesInstance = tvChartInstance.addCandlestickSeries({
+                    upColor: '#3fb950', downColor: '#f85149',
+                    borderUpColor: '#3fb950', borderDownColor: '#f85149',
+                    wickUpColor: '#3fb950', wickDownColor: '#f85149'
+                });
+
+                candleSeriesInstance.setData(data.candles);
+
+                if (entry > 0) {
+                    candleSeriesInstance.createPriceLine({ price: entry, color: '#58a6ff', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `Entry: ${entry.toFixed(2)}` });
+                }
+                if (sl > 0) {
+                    const slPct = entry > 0 ? (((sl - entry) / entry) * 100).toFixed(1) : '';
+                    candleSeriesInstance.createPriceLine({ price: sl, color: '#f85149', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: `SL: ${sl.toFixed(2)} (${slPct}%)` });
+                }
+                if (t1 > 0) {
+                    const rrVal = (entry > 0 && sl > 0 && Math.abs(entry - sl) > 0) ? (Math.abs(t1 - entry) / Math.abs(entry - sl)).toFixed(2) : '';
+                    candleSeriesInstance.createPriceLine({ price: t1, color: '#3fb950', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `T1: ${t1.toFixed(2)} (RR: ${rrVal})` });
+                }
+                if (t2 > 0) {
+                    candleSeriesInstance.createPriceLine({ price: t2, color: '#2ea043', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: `T2: ${t2.toFixed(2)}` });
+                }
+                if (t3 > 0) {
+                    candleSeriesInstance.createPriceLine({ price: t3, color: '#238636', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: `T3: ${t3.toFixed(2)}` });
+                }
+
+                const rrText = (entry > 0 && sl > 0 && t1 > 0 && Math.abs(entry - sl) > 0) ? (Math.abs(t1 - entry) / Math.abs(entry - sl)).toFixed(2) : '-';
+                document.getElementById('modalTradeInfo').innerHTML = `
+                    <div><b>Pattern:</b> <span style="color:#d29922;">${pattern || 'A-B-C-D'}</span></div>
+                    <div><b>Entry:</b> <span style="color:#58a6ff;">${entry ? entry.toFixed(2) : '-'}</span></div>
+                    <div><b>SL:</b> <span style="color:#f85149;">${sl ? sl.toFixed(2) : '-'}</span></div>
+                    <div><b>T1:</b> <span style="color:#3fb950;">${t1 ? t1.toFixed(2) : '-'}</span></div>
+                    <div><b>T2:</b> <span style="color:#2ea043;">${t2 ? t2.toFixed(2) : '-'}</span></div>
+                    <div><b>T3:</b> <span style="color:#238636;">${t3 ? t3.toFixed(2) : '-'}</span></div>
+                    <div><b>R:R:</b> <span style="background:#238636;color:#fff;padding:2px 6px;border-radius:3px;font-weight:bold;">${rrText}</span></div>
+                `;
+
+                tvChartInstance.timeScale().fitContent();
+            } catch(e) {
+                document.getElementById('tvChartContainer').innerHTML = `<div style="display:flex;justify-content:center;align-items:center;height:100%;color:#f85149;font-weight:bold;">Chart Error: ${e.message}</div>`;
+            }
+        }
+    </script>
+
     <div class="last-updated" id="last-updated">Loading...</div>
 </body>
 </html>
@@ -2313,6 +2461,11 @@ def _format_timestamp(ts):
         dp = p[0].split('-') if p[0] else []
         tp = p[1].split(':') if len(p) > 1 and p[1] else []
         if len(dp) == 3 and len(tp) >= 2:
+            h = int(tp[0])
+            m = int(tp[1])
+            # Clamp out-of-market night timestamps (e.g. 22:07 PM) to market open 09:15 AM
+            if h > 15 or h < 9 or (h == 15 and m > 30):
+                return f"{dp[2]}-{dp[1]}-{dp[0][-2:]} 09:15"
             return f"{dp[2]}-{dp[1]}-{dp[0][-2:]} {tp[0]}:{tp[1]}"
         return s
     except Exception:
@@ -2346,10 +2499,17 @@ def api_scan_export():
                 data = json.load(f)
             for section_name, status_tag in [("staged_trades", "Staged"), ("active_live", "Active"), ("carry_forward", "CarryFwd")]:
                 for t in data.get(section_name, []):
+                    side_val = t.get("side", "")
+                    if not side_val:
+                        cnt_str = str(t.get("contract") or t.get("symbol") or "").upper()
+                        if "CE" in cnt_str:
+                            side_val = "CE"
+                        elif "PE" in cnt_str:
+                            side_val = "PE"
                     writer.writerow([
                         t.get("symbol", ""),
                         t.get("contract", ""),
-                        t.get("side", ""),
+                        side_val,
                         _format_float(t.get("entry_spot")),
                         _format_float(t.get("current_sl")),
                         _format_float(t.get("t1")),
@@ -2714,6 +2874,11 @@ def api_buy_scanned_trade():
                 logging.warning(f"[1-CLICK BUY KITE ORDER WARNING] {contract}: {k_err}")
                 return jsonify({"ok": False, "error": f"Kite Order Placement Failed: {k_err}"}), 400
 
+        tf_param = data.get("timeframe") or data.get("timeframe_entry")
+        if not tf_param:
+            cfg = load_config()
+            tf_param = cfg.get(engine, {}).get("timeframe_entry") or "15minute"
+
         trade_data = {
             "contract": contract,
             "entry_spot": entry_spot,
@@ -2723,6 +2888,7 @@ def api_buy_scanned_trade():
             "t3": t3,
             "side": side,
             "pattern": "1CLICK_BUY",
+            "timeframe": tf_param,
             "position_type": "stock" if exch == "NSE" else "option",
             "user_edited": True
         }
@@ -2760,12 +2926,8 @@ def api_analyze_trade():
         except Exception:
             kite = None
 
-        if timeframe == "30minute":
-            timeframe_entry = "30minute"
-            timeframe_anchor = "30minute"
-        else:
-            timeframe_entry = "15minute" if timeframe in ["15minute", "75min", "60minute"] else timeframe
-            timeframe_anchor = "75min" if timeframe in ["15minute", "75min"] else ("60minute" if timeframe == "60minute" else timeframe)
+        timeframe_entry = timeframe
+        timeframe_anchor = timeframe
 
         analysis = derive_sl_targets_for_contract(kite, symbol, entry_price, timeframe_entry, timeframe_anchor)
         if not analysis:
@@ -2847,6 +3009,106 @@ def api_journal_update():
             save_journal_entries(entries)
             return jsonify({"ok": True})
         return jsonify({"ok": False, "error": "entry not found"}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/get-chart-data", methods=["GET"])
+def api_get_chart_data():
+    try:
+        contract = str(request.args.get("symbol", "")).strip().upper()
+        chart_type = str(request.args.get("type", "option")).strip().lower()
+        tf = str(request.args.get("timeframe", "30minute")).strip()
+
+        if not contract:
+            return jsonify({"ok": False, "error": "Symbol is required"}), 400
+
+        api_k, acc_t = load_kite_session()
+        kite = KiteConnect(api_key=api_k, access_token=acc_t)
+
+        token = None
+        exchange = "NFO"
+        spot_symbol = contract
+        spot_token = None
+
+        nfo_cache_path = os.path.join(BASE_DIR, "output", "monitor", "nfo_instruments_cache.csv")
+        if os.path.exists(nfo_cache_path):
+            try:
+                import pandas as pd
+                nfo_df = pd.read_csv(nfo_cache_path)
+                opt_rows = nfo_df[nfo_df["tradingsymbol"] == contract]
+                if not opt_rows.empty:
+                    token = int(opt_rows.iloc[0]["instrument_token"])
+                    spot_symbol = str(opt_rows.iloc[0]["name"]).strip().upper()
+            except Exception as e:
+                logging.warning(f"NFO cache lookup failed: {e}")
+
+        from trading_core import STOCK_REGISTRY
+        if spot_symbol in STOCK_REGISTRY:
+            spot_token = STOCK_REGISTRY[spot_symbol]["token"]
+        elif spot_symbol in ["NIFTY", "NIFTY 50", "NIFTY50"]:
+            spot_symbol = "NIFTY"
+            spot_token = 256265
+        elif spot_symbol in ["BANKNIFTY", "NIFTY BANK"]:
+            spot_symbol = "BANKNIFTY"
+            spot_token = 260105
+        elif spot_symbol in ["SENSEX", "BSESN"]:
+            spot_symbol = "SENSEX"
+            spot_token = 265
+        elif not token and contract in STOCK_REGISTRY:
+            spot_token = STOCK_REGISTRY[contract]["token"]
+            spot_symbol = contract
+
+        if chart_type == "spot" and spot_token:
+            target_token = spot_token
+            target_symbol = spot_symbol
+            target_exchange = "NSE" if (spot_symbol in STOCK_REGISTRY or spot_symbol in ["NIFTY", "BANKNIFTY"]) else "BSE"
+        else:
+            target_token = token or spot_token
+            target_symbol = contract if token else spot_symbol
+            target_exchange = "NFO" if token else "NSE"
+
+        if not target_token:
+            return jsonify({"ok": False, "error": f"Instrument token not found for {contract}"}), 400
+
+        from datetime import datetime as dt, timedelta
+        from trading_core import fetch_and_resample_candles
+
+        ref_now = dt.now()
+        from_date = (ref_now - timedelta(days=60)).strftime("%Y-%m-%d")
+        to_date = ref_now.strftime("%Y-%m-%d")
+
+        df_candles = fetch_and_resample_candles(kite, target_token, from_date, to_date, tf)
+        if df_candles is None or df_candles.empty:
+            return jsonify({"ok": False, "error": f"No candle data available for {target_symbol}"}), 400
+
+        import pandas as pd
+        candles = []
+        for _, r in df_candles.iterrows():
+            c_dt = pd.to_datetime(r['date'])
+            ts = int(c_dt.timestamp())
+            candles.append({
+                "time": ts,
+                "open": round(float(r['open']), 2),
+                "high": round(float(r['high']), 2),
+                "low": round(float(r['low']), 2),
+                "close": round(float(r['close']), 2),
+                "volume": int(r['volume']) if 'volume' in r else 0
+            })
+
+        kite_url = f"https://kite.zerodha.com/chart/ext/tvc/{target_exchange}/{target_symbol}/{target_token}"
+
+        return jsonify({
+            "ok": True,
+            "symbol": target_symbol,
+            "contract": contract,
+            "spot_symbol": spot_symbol,
+            "chart_type": chart_type,
+            "exchange": target_exchange,
+            "token": target_token,
+            "timeframe": tf,
+            "candles": candles,
+            "kite_url": kite_url
+        })
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
