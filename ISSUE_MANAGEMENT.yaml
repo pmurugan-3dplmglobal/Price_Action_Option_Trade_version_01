@@ -206,5 +206,22 @@ issues:
       Updated scan_anchor_bcd_breakout in common/trading_core.py to strictly enforce Option A invalidation: setup is invalidated if any candle between A and D closes below A.low (a_low floor line), while retaining A.low - buffer (sl_val) for order execution risk-reward and Stop Loss calculations.
     status: RESOLVED
 
+  - id: ISSUE-003
+    title: Display Data Write Failed - NameError 'rr' Is Not Defined
+    severity: HIGH
+    category: Persistence & UI Serialization
+    date_reported: "2026-08-04"
+    symptom: |
+      Display data write failed with error: name 'rr' is not defined when index/stock options engine called write_scan_display_data.
+    root_cause: |
+      Inside build_trade helper function in common/trading_core.py, the output dictionary attempted to reference an outer scope variable 'rr' instead of computing or reading trade risk-reward.
+    affected_files:
+      - common/trading_core.py
+      - ISSUE_MANAGEMENT.yaml
+    resolution: |
+      Updated build_trade in write_scan_display_data to safely extract rr_val from trade dictionary (or dynamically calculate risk-reward from entry, sl, and t1) and format rr_num safely.
+    status: RESOLVED
+
+
 
 

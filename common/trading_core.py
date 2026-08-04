@@ -1598,13 +1598,15 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
             t2 = t.get("t2") if (is_staged or not db_record or not db_record.get("t2")) else db_record.get("t2")
             t3 = t.get("t3") if (is_staged or not db_record or not db_record.get("t3")) else db_record.get("t3")
             pattern = t.get("pattern") if (is_staged or not db_record or not db_record.get("pattern")) else db_record.get("pattern", "")
-            side_val = t.get("side", "")
-            if not side_val:
-                cnt = str(contract).upper()
-                if "CE" in cnt:
-                    side_val = "CE"
-                elif "PE" in cnt:
-                    side_val = "PE"
+            rr_val = t.get("rr") if t.get("rr") is not None else t.get("RR")
+            if rr_val is None and entry is not None and sl is not None and t1 is not None:
+                try:
+                    risk = abs(float(entry) - float(sl))
+                    rr_val = (abs(float(t1) - float(entry)) / risk) if risk > 0 else 0.0
+                except Exception:
+                    rr_val = 0.0
+            rr_num = float(rr_val) if (rr_val is not None and str(rr_val).strip() != "") else 0.0
+
             return {
                 "symbol": t.get("symbol", ""),
                 "contract": contract,
@@ -1619,7 +1621,7 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                 "exit_time": clean_timestamp(exit_time),
                 "result": result,
                 "carry_forward": False,
-                "rr": round(rr, 2),
+                "rr": round(rr_num, 2),
                 "candle_a_time": clean_timestamp(t.get("candle_a_time") or t.get("CandleATime") or t.get("entry_time", "")),
                 "timeframe": t.get("timeframe", ""),
                 "candle_tf_time": t.get("candle_tf_time", "")
