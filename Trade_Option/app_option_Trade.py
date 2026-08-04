@@ -2209,10 +2209,21 @@ HTML_TEMPLATE = """
                     <h3 id="modalChartTitle" style="margin:0; color:#58a6ff; font-size:16px; font-weight:bold;">📈 Chart View</h3>
                     <span id="modalChartBadge" style="background:#238636; color:#fff; padding:3px 8px; border-radius:4px; font-size:11px; font-weight:bold;">30m TF</span>
                 </div>
-                <!-- Scope Toggle Bar -->
+                <!-- Scope & Timeframe Controls -->
                 <div style="display:flex; align-items:center; gap:8px;">
                     <button id="btnScopeOption" onclick="switchChartScope('option')" style="background:#1f6feb; color:#fff; border:none; padding:5px 12px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:12px;">📊 Option Contract Chart</button>
                     <button id="btnScopeSpot" onclick="switchChartScope('spot')" style="background:#21262d; color:#8b949e; border:1px solid #30363d; padding:5px 12px; border-radius:4px; font-weight:bold; cursor:pointer; font-size:12px;">📈 Underlying Spot Chart</button>
+                    
+                    <!-- Timeframe Dropdown Selector -->
+                    <select id="modalTfSelect" onchange="switchChartTimeframe(this.value)" style="background:#21262d; color:#c9d1d9; border:1px solid #30363d; padding:5px 10px; border-radius:4px; font-weight:bold; font-size:12px; cursor:pointer;">
+                        <option value="5minute">5m TF</option>
+                        <option value="15minute">15m TF</option>
+                        <option value="30minute" selected>30m TF (Default)</option>
+                        <option value="60minute">60m TF</option>
+                        <option value="75min">75m TF (Anchor)</option>
+                        <option value="day">Daily TF</option>
+                    </select>
+
                     <a id="modalKiteLink" href="#" target="_blank" style="background:#d29922; color:#000; text-decoration:none; padding:5px 12px; border-radius:4px; font-weight:bold; font-size:12px; display:inline-block;">Open in Zerodha Kite ↗</a>
                     <button onclick="closeChartModal()" style="background:transparent; border:none; color:#8b949e; font-size:22px; cursor:pointer; padding:0 8px;">&times;</button>
                 </div>
@@ -2230,12 +2241,16 @@ HTML_TEMPLATE = """
     <script>
         let currentChartParams = null;
         let currentChartScope = 'option';
+        let currentChartTf = '30minute';
         let tvChartInstance = null;
         let candleSeriesInstance = null;
 
         async function openChartModal(contract, symbol, side, entry, sl, t1, t2, t3, pattern) {
             currentChartParams = { contract, symbol, side, entry: parseFloat(entry)||0, sl: parseFloat(sl)||0, t1: parseFloat(t1)||0, t2: parseFloat(t2)||0, t3: parseFloat(t3)||0, pattern: pattern||'' };
             currentChartScope = 'option';
+            currentChartTf = '30minute';
+            const tfSel = document.getElementById('modalTfSelect');
+            if (tfSel) tfSel.value = '30minute';
             document.getElementById('chartModal').style.display = 'flex';
             await loadChartDataAndRender();
         }
@@ -2246,6 +2261,13 @@ HTML_TEMPLATE = """
                 tvChartInstance.remove();
                 tvChartInstance = null;
             }
+        }
+
+        async function switchChartTimeframe(tf) {
+            currentChartTf = tf;
+            const labels = { '5minute': '5m TF', '15minute': '15m TF', '30minute': '30m TF', '60minute': '60m TF', '75min': '75m TF', 'day': 'Daily TF' };
+            document.getElementById('modalChartBadge').innerText = labels[tf] || `${tf} TF`;
+            await loadChartDataAndRender();
         }
 
         async function switchChartScope(scope) {
@@ -2265,7 +2287,7 @@ HTML_TEMPLATE = """
             document.getElementById('modalChartTitle').innerText = `${currentChartScope === 'spot' ? '📈 Spot' : '📊 Option'}: ${targetSymbol} (${side || 'CE'})`;
             
             try {
-                const resp = await fetch(`/api/get-chart-data?symbol=${encodeURIComponent(targetSymbol)}&type=${currentChartScope}&timeframe=30minute`);
+                const resp = await fetch(`/api/get-chart-data?symbol=${encodeURIComponent(targetSymbol)}&type=${currentChartScope}&timeframe=${encodeURIComponent(currentChartTf)}`);
                 const data = await resp.json();
                 
                 if (!data.ok || !data.candles || data.candles.length === 0) {
