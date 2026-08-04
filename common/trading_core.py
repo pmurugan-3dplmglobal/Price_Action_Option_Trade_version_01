@@ -98,10 +98,8 @@ def resample_timeframe(df, timeframe_str):
         return df
 
     tf_s = str(timeframe_str).lower()
-    origin = None
     if tf_s in ["75min", "75mins", "75m", "75minute"]:
         rule = '75min'
-        origin = 'start'
     elif tf_s in ["3hr", "3h", "180min", "180minute"]:
         rule = '180min'
     elif tf_s in ["4hr", "4h", "4hour", "240min", "240minute"]:
@@ -122,11 +120,24 @@ def resample_timeframe(df, timeframe_str):
             return df
 
         hist[time_col] = pd.to_datetime(hist[time_col])
+        if tf_s in ["75min", "75mins", "75m", "75minute"]:
+            hist['trade_date'] = hist[time_col].dt.date
+            groups = []
+            for d, g in hist.groupby('trade_date'):
+                g_res = g.set_index(time_col).resample('75min', origin='start').agg({
+                    'open': 'first',
+                    'high': 'max',
+                    'low': 'min',
+                    'close': 'last',
+                    'volume': 'sum'
+                }).dropna().reset_index()
+                groups.append(g_res)
+            if groups:
+                resampled = pd.concat(groups, ignore_index=True)
+                return resampled
+
         hist = hist.set_index(time_col)
-        resample_kwargs = {'rule': rule}
-        if origin:
-            resample_kwargs['origin'] = origin
-        resampled = hist.resample(**resample_kwargs).agg({
+        resampled = hist.resample(rule, origin='start').agg({
             'open': 'first',
             'high': 'max',
             'low': 'min',
@@ -713,7 +724,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         if t1 is not None:
             after_a = df_entry.iloc[a_idx + 1 :]
             if not after_a.empty:
-                if float(after_a['close'].min()) <= invalidation:
+                if float(after_a['close'].min()) < a_low:
                     continue
                 if float(after_a['close'].max()) >= t1:
                     continue
@@ -750,7 +761,7 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
         if b_idx is None:
             continue
 
-        # Point C: FIRST candle AFTER B with red retest (dips to/close to benchmark, stays above SL)
+        # Point C: FIRST candle AFTER B with red retest (dips to/close to benchmark, stays above A.low)
         c_slice = df_entry.iloc[b_idx + 1:]
         c_idx = None
         for j in range(len(c_slice)):
@@ -759,8 +770,8 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
             c_close = float(c_row['close'])
             c_open = float(c_row['open'])
             is_red = c_close < c_open
-            if (c_low <= benchmark and c_close > invalidation and is_red) or \
-               (c_low <= invalidation and c_close > invalidation and c_close < float(a['open']) and is_red):
+            if (c_low <= benchmark and c_close >= a_low and is_red) or \
+               (c_low <= a_low and c_close >= a_low and c_close < float(a['open']) and is_red):
                 c_idx = b_idx + 1 + j
                 break
         if c_idx is None:
@@ -779,9 +790,9 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
 
         d = df_entry.iloc[d_idx]
 
-        # Invalidation between A and D: no candle closes below SL (A.low - buffer)
+        # Invalidation between A and D: Option A - no candle closes below A.low (A.low floor line)
         between = df_entry.iloc[a_idx + 1 : d_idx]
-        if not between.empty and float(between['close'].min()) < invalidation:
+        if not between.empty and float(between['close'].min()) < a_low:
             continue
 
         close_price = float(d['close'])
@@ -1471,31 +1482,33 @@ def lookup_scan_sl_target(contract, symbol, engine, kite=None, entry_price=0, ti
             with open(ov_path, encoding="utf-8") as f:
                 overrides = json.load(f)
             best_match = None
-            best_len = -1
             for eng_k in (engine, "nifty50", "index"):
                 eng_ov = overrides.get(eng_k, {})
                 for sym_k, vals in eng_ov.items():
                     clean_k = str(sym_k).replace(" ", "").upper()
-                    if not clean_k:
-                        continue
                     if clean_k == clean_c:
-                        best_match = (vals, len(clean_k))
+                        best_match = vals
                         break
-                    if clean_c in clean_k and len(clean_k) > best_len:
-                        best_match = (vals, len(clean_k))
-                        best_len = len(clean_k)
                 if best_match:
                     break
             if best_match:
-                vals = best_match[0]
-                return {
-                    "current_sl": vals.get("current_sl"),
-                    "t1": vals.get("t1"),
-                    "t2": vals.get("t2"),
-                    "t3": vals.get("t3"),
-                    "pattern": "USER_OVERRIDE",
-                    "user_edited": True
-                }
+                ov_sl = best_match.get("current_sl")
+                ov_t1 = best_match.get("t1")
+                # Target & SL Sanity Guard: Ensure T1 > entry_price for long options
+                if entry_price and float(entry_price) > 0:
+                    ep = float(entry_price)
+                    if ov_t1 is not None and ov_t1 <= ep:
+                        logging.warning(f"[TARGET SANITY GUARD] Override T1 ({ov_t1}) <= Entry ({ep}) for {clean_c}. Rejecting invalid override targets.")
+                        ov_t1 = None
+                if ov_t1 is not None:
+                    return {
+                        "current_sl": ov_sl,
+                        "t1": ov_t1,
+                        "t2": best_match.get("t2"),
+                        "t3": best_match.get("t3"),
+                        "pattern": "USER_OVERRIDE",
+                        "user_edited": True
+                    }
     except Exception:
         pass
     
@@ -1571,24 +1584,31 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
         db_trades = trade_db.get_all_trades(engine_name) if engine_name else []
         db_map = {}
         for dbt in db_trades:
-            c = str(dbt.get("contract") or dbt.get("symbol") or "").replace(" ", "").upper()
-            if c: db_map[c] = dbt
+            if dbt.get("status") in ["ACTIVE", "OPEN"]:
+                c = str(dbt.get("contract") or dbt.get("symbol") or "").replace(" ", "").upper()
+                if c: db_map[c] = dbt
 
-        def build_trade(t, result, entry_time, exit_time):
+        def build_trade(t, result, entry_time, exit_time, is_staged=False):
             contract = t.get("contract") or t.get("symbol") or ""
             c_clean = str(contract).replace(" ", "").upper()
-            db_record = db_map.get(c_clean)
-            entry = db_record.get("entry_spot") if (db_record and db_record.get("entry_spot") is not None) else t.get("entry_spot")
-            sl = db_record.get("current_sl") if (db_record and db_record.get("current_sl")) else t.get("current_sl")
-            t1 = db_record.get("t1") if (db_record and db_record.get("t1")) else t.get("t1")
-            t2 = db_record.get("t2") if (db_record and db_record.get("t2")) else t.get("t2")
-            t3 = db_record.get("t3") if (db_record and db_record.get("t3")) else t.get("t3")
-            pattern = db_record.get("pattern") if (db_record and db_record.get("pattern")) else t.get("pattern", "")
-            rr = calc_rr(entry, sl, t1, t2) if entry is not None else 0
+            db_record = db_map.get(c_clean) if not is_staged else None
+            entry = t.get("entry_spot") if (is_staged or not db_record or db_record.get("entry_spot") is None) else db_record.get("entry_spot")
+            sl = t.get("current_sl") if (is_staged or not db_record or not db_record.get("current_sl")) else db_record.get("current_sl")
+            t1 = t.get("t1") if (is_staged or not db_record or not db_record.get("t1")) else db_record.get("t1")
+            t2 = t.get("t2") if (is_staged or not db_record or not db_record.get("t2")) else db_record.get("t2")
+            t3 = t.get("t3") if (is_staged or not db_record or not db_record.get("t3")) else db_record.get("t3")
+            pattern = t.get("pattern") if (is_staged or not db_record or not db_record.get("pattern")) else db_record.get("pattern", "")
+            side_val = t.get("side", "")
+            if not side_val:
+                cnt = str(contract).upper()
+                if "CE" in cnt:
+                    side_val = "CE"
+                elif "PE" in cnt:
+                    side_val = "PE"
             return {
                 "symbol": t.get("symbol", ""),
                 "contract": contract,
-                "side": t.get("side", ""),
+                "side": side_val,
                 "entry_spot": entry,
                 "current_sl": sl,
                 "t1": t1,
@@ -1604,7 +1624,7 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                 "timeframe": t.get("timeframe", ""),
                 "candle_tf_time": t.get("candle_tf_time", "")
             }
-        new_staged = [build_trade(t, t.get("pattern", "BE_ABCD"), t.get("entry_time", now_str), None) for t in (staged or [])]
+        new_staged = [build_trade(t, t.get("pattern", "BE_ABCD"), t.get("entry_time", now_str), None, is_staged=True) for t in (staged or [])]
         carry_fwd = []
         active_live = []
         active_keys = set()
@@ -1760,12 +1780,13 @@ def reconcile_positions(kite, registry, positions_dict, lock, engine, timeframe_
                             pos["t1"] = t["t1"]
                             pos["t2"] = t.get("t2")
                             pos["t3"] = t.get("t3")
+                            pos["timeframe"] = t.get("timeframe", pos.get("timeframe", timeframe_entry))
                             pos["pattern"] = t.get("pattern", pos.get("pattern", "DB_RECOVERED"))
                             db_found = True
-                            logging.info(f"[RECONCILE] Restored SL/Targets for {s} from DB: SL={pos['current_sl']} T1={pos['t1']}")
+                            logging.info(f"[RECONCILE] Restored SL/Targets for {s} from DB: SL={pos['current_sl']} T1={pos['t1']} TF={pos['timeframe']}")
                             tid = pos.get("trade_id")
                             if tid:
-                                trade_db.update_trade(tid, {"current_sl": pos["current_sl"], "t1": pos["t1"], "t2": pos["t2"], "t3": pos["t3"]})
+                                trade_db.update_trade(tid, {"current_sl": pos["current_sl"], "t1": pos["t1"], "t2": pos["t2"], "t3": pos["t3"], "timeframe": pos["timeframe"]})
                             break
                 if not db_found:
                     config = registry.get(s)

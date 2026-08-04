@@ -190,4 +190,21 @@ issues:
       Created common/spot_enricher.py utility module. It reads exported scan CSVs, extracts underlying symbols, evaluates spot trend (BULL/BEAR) and spot T1 target using Negation Theory, and appends Spot_Trend and Spot_T1_Target columns to an enriched CSV output file.
     status: RESOLVED
 
+  - id: FEATURE-012
+    title: Strict Anchor A.low Closing Basis Invalidation Alignment (Option A)
+    severity: ENHANCEMENT
+    category: Pattern Engine & Blueprint Alignment
+    date_reported: "2026-08-04"
+    symptom: |
+      Breakout scanner previously checked invalidation against A.low - buffer (e.g. 60.43), allowing candles after C to close below A.low (e.g. 61.50) while remaining above the buffered SL level.
+    root_cause: |
+      Discrepancy with Master Price Action Blueprint (Page 6), which explicitly mandates "holding above A.low" (A.low floor line) on a closing basis.
+    affected_files:
+      - common/trading_core.py
+      - ISSUE_MANAGEMENT.yaml
+    resolution: |
+      Updated scan_anchor_bcd_breakout in common/trading_core.py to strictly enforce Option A invalidation: setup is invalidated if any candle between A and D closes below A.low (a_low floor line), while retaining A.low - buffer (sl_val) for order execution risk-reward and Stop Loss calculations.
+    status: RESOLVED
+
+
 
