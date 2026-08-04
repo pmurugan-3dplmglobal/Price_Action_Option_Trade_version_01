@@ -2371,35 +2371,29 @@ HTML_TEMPLATE = """
                     if (idxD === -1) idxD = candles.length - 1;
                     if (idxA === -1 || idxA >= idxD) idxA = Math.max(0, idxD - 12);
 
-                    if (idxA >= 0 && idxD > idxA) {
-                        let idxB = idxA;
-                        let maxH = candles[idxA].high;
-                        for (let i = idxA; i < idxD; i++) {
-                            if (candles[i].high >= maxH) { maxH = candles[i].high; idxB = i; }
-                        }
-                        let idxC = idxB;
-                        let minL = candles[idxB].low;
-                        for (let i = idxB; i <= idxD; i++) {
-                            if (candles[i].low <= minL) { minL = candles[i].low; idxC = i; }
-                        }
-
-                        markers.push({ time: candles[idxA].time, position: 'belowBar', color: '#3fb950', shape: 'circle', text: 'A (Anchor)' });
-                        if (idxB !== idxA && idxB !== idxD) {
-                            markers.push({ time: candles[idxB].time, position: 'aboveBar', color: '#58a6ff', shape: 'square', text: 'B (Swing High)' });
-                        }
-                        if (idxC !== idxB && idxC !== idxD) {
-                            markers.push({ time: candles[idxC].time, position: 'belowBar', color: '#d29922', shape: 'circle', text: 'C (Retest)' });
-                        }
-                        markers.push({ time: candles[idxD].time, position: 'aboveBar', color: '#2ea043', shape: 'arrowUp', text: 'D (Entry)' });
-
-                        markers.sort((m1, m2) => m1.time - m2.time);
-                        const uniqueMarkers = [];
-                        const seenTimes = new Set();
-                        markers.forEach(m => {
-                            if (!seenTimes.has(m.time)) { seenTimes.add(m.time); uniqueMarkers.push(m); }
-                        });
-                        candleSeriesInstance.setMarkers(uniqueMarkers);
+                    // B: Peak high candle between A and D
+                    let idxB = idxA;
+                    let maxH = candles[idxA].high;
+                    for (let i = idxA; i <= idxD; i++) {
+                        if (candles[i].high >= maxH) { maxH = candles[i].high; idxB = i; }
                     }
+
+                    // C: Retest low candle between B and D
+                    let idxC = idxB;
+                    let minL = candles[idxB].low;
+                    for (let i = idxB; i <= idxD; i++) {
+                        if (candles[i].low <= minL) { minL = candles[i].low; idxC = i; }
+                    }
+
+                    markers.push({ time: candles[idxA].time, position: 'belowBar', color: '#3fb950', shape: 'circle', text: 'A (Anchor)' });
+                    markers.push({ time: candles[idxB].time, position: 'aboveBar', color: '#58a6ff', shape: 'square', text: 'B (Swing High)' });
+                    if (idxC !== idxA && idxC !== idxD) {
+                        markers.push({ time: candles[idxC].time, position: 'belowBar', color: '#d29922', shape: 'circle', text: 'C (Retest)' });
+                    }
+                    markers.push({ time: candles[idxD].time, position: 'aboveBar', color: '#2ea043', shape: 'arrowUp', text: 'D (Entry)' });
+
+                    markers.sort((m1, m2) => m1.time - m2.time);
+                    candleSeriesInstance.setMarkers(markers);
                 }
 
                 if (entry > 0) {
