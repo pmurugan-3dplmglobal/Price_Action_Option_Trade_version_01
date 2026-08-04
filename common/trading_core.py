@@ -1607,6 +1607,14 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                     rr_val = 0.0
             rr_num = float(rr_val) if (rr_val is not None and str(rr_val).strip() != "") else 0.0
 
+            side_val = t.get("side", "")
+            if not side_val:
+                cnt = str(contract).upper()
+                if "CE" in cnt:
+                    side_val = "CE"
+                elif "PE" in cnt:
+                    side_val = "PE"
+
             return {
                 "symbol": t.get("symbol", ""),
                 "contract": contract,

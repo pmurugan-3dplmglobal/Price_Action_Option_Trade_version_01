@@ -222,6 +222,23 @@ issues:
       Updated build_trade in write_scan_display_data to safely extract rr_val from trade dictionary (or dynamically calculate risk-reward from entry, sl, and t1) and format rr_num safely.
     status: RESOLVED
 
+  - id: ISSUE-004
+    title: Display Data Write Failed - NameError 'side_val' Is Not Defined
+    severity: HIGH
+    category: Persistence & UI Serialization
+    date_reported: "2026-08-04"
+    symptom: |
+      Display data write failed with error: name 'side_val' is not defined when nifty50 options engine called write_scan_display_data.
+    root_cause: |
+      Inside build_trade helper function in common/trading_core.py, side_val declaration block was missing before dictionary construction.
+    affected_files:
+      - common/trading_core.py
+      - ISSUE_MANAGEMENT.yaml
+    resolution: |
+      Defined side_val variable inside build_trade, deriving CE/PE option type from trade dictionary or contract string.
+    status: RESOLVED
+
+
 
 
 
