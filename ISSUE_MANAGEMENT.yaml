@@ -238,6 +238,23 @@ issues:
       Defined side_val variable inside build_trade, deriving CE/PE option type from trade dictionary or contract string.
     status: RESOLVED
 
+  - id: FEATURE-013
+    title: Blueprint Directory Documentation - Scratch vs Backtest Utilities
+    severity: ENHANCEMENT
+    category: Documentation & Architecture
+    date_reported: "2026-08-04"
+    symptom: |
+      The master documentation lacked explicit definitions separating official backtest validation suites from temporary scratch diagnostic tools.
+    root_cause: |
+      Need single-source-of-truth mapping in MASTER_DOCUMENTATION.yaml for AI agent re-usability of existing helper scripts in scratch/ and backtest/.
+    affected_files:
+      - MASTER_DOCUMENTATION.yaml
+      - ISSUE_MANAGEMENT.yaml
+    resolution: |
+      Documented backtest/ (official historical validation runner suite) and scratch/ (re-usable maintenance tools, target auditors, and active position metrics analyzers) in MASTER_DOCUMENTATION.yaml.
+    status: RESOLVED
+
+
 
 
 

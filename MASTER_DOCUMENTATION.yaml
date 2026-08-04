@@ -45,6 +45,7 @@ architecture:
       stock_bullish_reversal_scanner.py: "Stock Bullish Reversal Scanner & Exporter"
       stock_bearish_reversal_scanner.py: "Stock Bearish Reversal Scanner & Exporter"
     backtest:
+      description: "Official Historical Validation Suite for multi-day option strike backtests, Yahoo/Kite historical candle runners, and simulation engines"
       run_official_option_strike_backtest.py: "Official Multi-day Option Strike & Spot Backtest Runner"
       run_kite_master_backtest.py: "Kite Connect API Historical Multi-day Backtest Suite"
       run_master_backtest.py: "Yahoo Finance / Historical Data Master Backtest Engine"
@@ -53,6 +54,14 @@ architecture:
       test_fetch.py: "Quick Yahoo Finance API candle fetch test script"
       test_option_strike_fetch.py: "Zerodha NFO Option Strike token & candle fetch test script"
       test_spot_scan.py: "Spot & Option pattern scanner verification test script"
+    scratch:
+      description: "Temporary Diagnostic Scripts & Re-usable Maintenance Utilities for debug, audit, process checking, and batch target updates"
+      analyze_all_active.py: "Active position metrics analysis utility"
+      apply_30m_targets_to_all_active.py: "Batch target updater for active trades"
+      audit_targets.py: "Target calculation auditor script"
+      check_procs.py: "Python background process checker"
+      export_and_exit_all.py: "Bulk trade exit & export helper script"
+      read_active_pos.py: "Active position JSON state inspector"
 
 config_precedence:
   priority_1: "Manual UI User Edits (overrides in sl_target_overrides.json & active_positions_db.json)"
