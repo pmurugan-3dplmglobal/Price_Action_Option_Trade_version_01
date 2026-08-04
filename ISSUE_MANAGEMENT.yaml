@@ -254,6 +254,22 @@ issues:
       Documented backtest/ (official historical validation runner suite) and scratch/ (re-usable maintenance tools, target auditors, and active position metrics analyzers) in MASTER_DOCUMENTATION.yaml.
     status: RESOLVED
 
+  - id: FEATURE-014
+    title: Pattern Name Standardization - BEAR_BASE_ABCD
+    severity: ENHANCEMENT
+    category: Strategy Core Naming
+    date_reported: "2026-08-04"
+    symptom: |
+      Bearish base breakout setups used non-symmetrical label "BEAR_A_BCD_Breakout" while Bullish base setups used "BASE_ABCD".
+    root_cause: |
+      Default pattern_type fallback in scan_anchor_bcd_breakout_bearish required standardization for 100% naming symmetry.
+    affected_files:
+      - common/trading_core.py
+      - ISSUE_MANAGEMENT.yaml
+    resolution: |
+      Standardized default pattern_type string in scan_anchor_bcd_breakout_bearish to "BEAR_BASE_ABCD".
+    status: RESOLVED
+
 
 
 
