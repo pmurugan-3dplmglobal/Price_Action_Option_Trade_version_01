@@ -1642,7 +1642,8 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
         carry_fwd = []
         active_live = []
         active_keys = set()
-        for s, p in active.items():
+        active_iterable = active.items() if isinstance(active, dict) else [(p.get("symbol", ""), p) for p in (active or [])]
+        for s, p in active_iterable:
             t = p.copy()
             t["symbol"] = s
             et = p.get("entry_time", now_str)
