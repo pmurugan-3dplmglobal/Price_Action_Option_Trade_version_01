@@ -1006,11 +1006,15 @@ def fetch_option_data(kite, token, from_date, to_date, primary_tf, fallback_tf, 
     return df
 
 def trading_days_between(start, end):
+    if isinstance(start, str):
+        start = dt.strptime(start, "%Y-%m-%d")
+    if isinstance(end, str):
+        end = dt.strptime(end, "%Y-%m-%d")
     days = []
     current = start
     while current <= end:
         if current.weekday() < 5:
-            days.append(current)
+            days.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
     return days
 
@@ -2822,7 +2826,7 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
             continue
 
         intermediate_bars = df_entry.iloc[e_anchor_idx:d_idx + 1]
-        if float(intermediate_bars['close'].max()) > sl_val:
+        if float(intermediate_bars['close'].max()) > a_high:
             continue
 
         pattern_type = det_result["Pattern"] if det_result else "BEAR_A_BCD_Breakout"
