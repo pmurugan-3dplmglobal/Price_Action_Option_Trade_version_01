@@ -265,10 +265,27 @@ issues:
       Default pattern_type fallback in scan_anchor_bcd_breakout_bearish required standardization for 100% naming symmetry.
     affected_files:
       - common/trading_core.py
-      - ISSUE_MANAGEMENT.yaml
     resolution: |
       Standardized default pattern_type string in scan_anchor_bcd_breakout_bearish to "BEAR_BASE_ABCD".
     status: RESOLVED
+
+  - id: FEATURE-015
+    title: Interactive Chart View Modal with TradingView Lightweight Charts & SL/Target Overlays
+    severity: ENHANCEMENT
+    category: Dashboard UI Integration
+    date_reported: "2026-08-04"
+    symptom: |
+      Users could not visualize staged or active trade setups with SL and Target price lines directly on interactive charts.
+    root_cause: |
+      Feature 3 requirement for interactive chart pop-up modal with dual scope (Option Contract + Spot Stock) and direct Zerodha Kite links.
+    affected_files:
+      - Trade_Option/app_option_Trade.py
+      - Trade_Stock/app_Sock_Trade.py
+      - ISSUE_MANAGEMENT.yaml
+    resolution: |
+      Added /api/get-chart-data backend endpoint and TradingView Lightweight Charts pop-up modal (#chartModal) to both web dashboards. Renders candlestick series, overlay price lines (Entry, SL, T1, T2, T3), scope toggles, and direct Zerodha Kite links.
+    status: RESOLVED
+
 
 
 
