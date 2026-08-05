@@ -63,7 +63,7 @@ STATE_FILE = "output/monitor/stock_positions_state.json"
 SCAN_INTERVAL_SECONDS = 300
 STRIKE_RANGE = 0
 
-TIMEFRAME_ENTRY = "15minute"
+TIMEFRAME_ENTRY = "30minute"
 TIMEFRAME_ANCHOR = "30minute"
 BACKTEST_DATE = None
 
@@ -263,6 +263,8 @@ def run_scan_cycle(kite):
     target_date = BACKTEST_DATE
     if target_date is None:
         ref_now = dt.now()
+    elif isinstance(target_date, str):
+        ref_now = dt.strptime(target_date, "%Y-%m-%d")
     else:
         ref_now = target_date
     limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
@@ -360,6 +362,8 @@ def execute_highest_rr_trade(kite, staged):
                 "trailing_stage": 0, "lot_size": best["lot_size"], "position_size": pos_size,
                 "pattern": best["pattern"], "timeframe": TIMEFRAME_ENTRY,
                 "side": opt_type, "strike": target_strike,
+                "benchmark": best.get("benchmark"), "anchor_floor": best.get("anchor_floor"),
+                "direction": best.get("direction", "BULL"),
                 "entry_time": dt.now().isoformat(),
                 "position_type": "option"
             }
@@ -480,27 +484,20 @@ def main_scan_loop(kite):
                     if eng_overrides:
                         with position_lock:
                             for sym, vals in eng_overrides.items():
+                                sym_clean = str(sym).replace(" ", "").upper()
                                 target_pos = None
-                                if sym in ACTIVE_POSITIONS:
-                                    target_pos = ACTIVE_POSITIONS[sym]
-                                else:
-                                    best_pos = None
-                                    best_len = -1
-                                    for k, p in ACTIVE_POSITIONS.items():
-                                        p_contract = str(p.get("contract") or "").replace(" ", "").upper()
-                                        p_symbol = str(p.get("symbol") or "").replace(" ", "").upper()
-                                        k_clean = str(k).replace(" ", "").upper()
-                                        if p_contract == sym or p_symbol == sym or k_clean == sym:
-                                            best_pos = p
-                                            break
-                                        if sym in p_contract and len(p_contract) > best_len:
-                                            best_pos = p
-                                            best_len = len(p_contract)
-                                        elif sym in p_symbol and len(p_symbol) > best_len:
-                                            best_pos = p
-                                            best_len = len(p_symbol)
-                                    target_pos = best_pos
+                                for k, p in ACTIVE_POSITIONS.items():
+                                    p_contract = str(p.get("contract") or "").replace(" ", "").upper()
+                                    k_clean = str(k).replace(" ", "").upper()
+                                    if p_contract == sym_clean or k_clean == sym_clean:
+                                        target_pos = p
+                                        break
                                 if target_pos:
+                                    ep = float(target_pos.get("entry_spot", 0))
+                                    ov_t1 = vals.get("t1")
+                                    if ep > 0 and ov_t1 is not None and ov_t1 <= ep:
+                                        logging.warning(f"[OVERRIDE REJECTED] Override T1 ({ov_t1}) <= Entry ({ep}) for {target_pos.get('contract')}. Skipping invalid override.")
+                                        continue
                                     changed = False
                                     for key in ("current_sl", "t1", "t2", "t3"):
                                         if key in vals:

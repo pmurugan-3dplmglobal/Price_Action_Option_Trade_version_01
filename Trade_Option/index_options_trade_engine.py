@@ -159,6 +159,8 @@ def run_scan_cycle(kite):
     target_date = BACKTEST_DATE
     if target_date is None:
         ref_now = dt.now()
+    elif isinstance(target_date, str):
+        ref_now = dt.strptime(target_date, "%Y-%m-%d")
     else:
         ref_now = target_date
     limits = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200, "30minute": 200, "60minute": 400, "75minute": 400, "75min": 400, "day": 2000}
@@ -348,7 +350,8 @@ def main_scan_loop(kite):
                 "pattern": "KITE_RECOVERED", "side": side,
                 "timeframe": TIMEFRAME_ENTRY,
                 "entry_time": dt.now().isoformat(),
-                "position_type": "option"
+                "position_type": "option",
+                "benchmark": 0, "anchor_floor": 0, "direction": "BULL"
             }
             pos["trade_id"] = trade_db.create_trade("index", symbol, {k: v for k, v in pos.items() if k != "trade_id"})
             scan_sl = lookup_scan_sl_target(p["tradingsymbol"], symbol, "index", kite, pos["entry_spot"], TIMEFRAME_ENTRY, TIMEFRAME_ANCHOR)

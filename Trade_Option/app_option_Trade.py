@@ -1157,7 +1157,7 @@ HTML_TEMPLATE = """
                 const cleanSymbol = (t.symbol || '').replace(/\s+/g, '').toUpperCase();
                 const isBought = activeContracts.has(cleanContract) || activeContracts.has(cleanSymbol);
                 
-                const chartCell = `<td style="text-align:center"><button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||t.entry||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${res}')" style="background:#1f6feb;color:#ffffff;border:none;padding:4px 8px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px;">📈 Chart</button></td>`;
+                const chartCell = `<td style="text-align:center"><button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||t.entry||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${res}','${t.candle_a_time||''}','${t.entry_time||''}',${t.benchmark||0},${t.anchor_floor||0},'${t.direction||'BULL'}')" style="background:#1f6feb;color:#ffffff;border:none;padding:4px 8px;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px;">📈 Chart</button></td>`;
                 let actCell = '';
                 if (isBought) {
                     actCell = '<td style="text-align:center"><button disabled class="btn-bought" style="background:#238636;color:#ffffff;border:none;padding:4px 10px;border-radius:4px;font-weight:bold;cursor:not-allowed;font-size:11px">BOUGHT</button></td>';
@@ -1301,6 +1301,11 @@ HTML_TEMPLATE = """
                         t2: kp.t2 !== undefined ? kp.t2 : (dbMatch ? dbMatch.t2 : ''),
                         t3: kp.t3 !== undefined ? kp.t3 : (dbMatch ? dbMatch.t3 : ''),
                         token: dbMatch ? (dbMatch.option_token || dbMatch.index_token || '') : (kp.token || ''),
+                        candle_a_time: dbMatch ? (dbMatch.candle_a_time || '') : (kp.candle_a_time || ''),
+                        entry_time: dbMatch ? (dbMatch.entry_time || '') : (kp.entry_time || ''),
+                        benchmark: dbMatch ? (dbMatch.benchmark || 0) : (kp.benchmark || 0),
+                        anchor_floor: dbMatch ? (dbMatch.anchor_floor || 0) : (kp.anchor_floor || 0),
+                        direction: dbMatch ? (dbMatch.direction || 'BULL') : (kp.direction || 'BULL'),
                         status: 'ACTIVE',
                         source: 'kite'
                     };
@@ -1338,6 +1343,11 @@ HTML_TEMPLATE = """
                     exit_time: t.exit_time || '',
                     pnl_percent: t.pnl_percent,
                     token: t.option_token || t.index_token || '',
+                    candle_a_time: t.candle_a_time || '',
+                    entry_time: t.entry_time || '',
+                    benchmark: t.benchmark || 0,
+                    anchor_floor: t.anchor_floor || 0,
+                    direction: t.direction || 'BULL',
                     source: 'db'
                 });
             });
@@ -1377,7 +1387,7 @@ HTML_TEMPLATE = """
                     const uid = 'pos_' + (t.symbol || 'no_sym') + '_' + (t.source || '');
                     const es = editStates[uid];
                     let slCell, t1Cell, t2Cell, t3Cell, actCell;
-                    const chartCellPos = `<td style="text-align:center"><button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${t.pattern||''}')" style="background:#1f6feb;color:#ffffff;border:none;padding:2px 6px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600;">📈 Chart</button></td>`;
+                    const chartCellPos = `<td style="text-align:center"><button class="btn-chart" onclick="openChartModal('${t.contract||t.symbol||''}','${t.symbol||''}','${t.side||'CE'}',${t.entry_spot||0},${t.current_sl||t.sl||0},${t.t1||0},${t.t2||0},${t.t3||0},'${t.pattern||''}','${t.candle_a_time||''}','${t.entry_time||''}',${t.benchmark||0},${t.anchor_floor||0},'${t.direction||'BULL'}')" style="background:#1f6feb;color:#ffffff;border:none;padding:2px 6px;border-radius:4px;font-size:10px;cursor:pointer;font-weight:600;">📈 Chart</button></td>`;
                     if (es && es.active) {
                         const eng2 = t.engine === 'Index' ? 'index' : 'nifty50';
                         slCell = `<td><input id="sl_${uid}" value="${es.sl}" style="width:60px" oninput="editStates['${uid}'].sl=this.value" onchange="saveEdit('${uid}','${t.contract||t.symbol||''}','${eng2}')"></td>`;
@@ -2253,10 +2263,10 @@ HTML_TEMPLATE = """
                     const dateParts = parts[0].split('-');
                     const timeParts = parts[1].split(':');
                     if (dateParts.length === 3) {
-                        let yr = parseInt(dateParts[2]);
+                        let yr = parseInt(dateParts[0]);
                         if (yr < 100) yr += 2000;
                         const month = parseInt(dateParts[1]) - 1;
-                        const day = parseInt(dateParts[0]);
+                        const day = parseInt(dateParts[2]);
                         const hr = parseInt(timeParts[0] || 0);
                         const min = parseInt(timeParts[1] || 0);
                         return Math.floor(new Date(yr, month, day, hr, min).getTime() / 1000);
@@ -2277,12 +2287,14 @@ HTML_TEMPLATE = """
             return closestIdx;
         }
 
-        async function openChartModal(contract, symbol, side, entry, sl, t1, t2, t3, pattern, candle_a_time, entry_time) {
+        async function openChartModal(contract, symbol, side, entry, sl, t1, t2, t3, pattern, candle_a_time, entry_time, benchmark, anchor_floor, direction) {
             currentChartParams = { 
                 contract, symbol, side, 
                 entry: parseFloat(entry)||0, sl: parseFloat(sl)||0, 
                 t1: parseFloat(t1)||0, t2: parseFloat(t2)||0, t3: parseFloat(t3)||0, 
-                pattern: pattern||'', candle_a_time: candle_a_time||'', entry_time: entry_time||'' 
+                pattern: pattern||'', candle_a_time: candle_a_time||'', entry_time: entry_time||'',
+                benchmark: parseFloat(benchmark)||0, anchor_floor: parseFloat(anchor_floor)||0,
+                direction: direction||'BULL'
             };
             currentChartScope = 'option';
             currentChartTf = '30minute';
@@ -2318,7 +2330,7 @@ HTML_TEMPLATE = """
 
         async function loadChartDataAndRender() {
             if (!currentChartParams) return;
-            const { contract, symbol, side, entry, sl, t1, t2, t3, pattern, candle_a_time, entry_time } = currentChartParams;
+            const { contract, symbol, side, entry, sl, t1, t2, t3, pattern, candle_a_time, entry_time, benchmark, anchor_floor, direction } = currentChartParams;
             const targetSymbol = currentChartScope === 'spot' ? (symbol || contract) : (contract || symbol);
             
             document.getElementById('modalChartTitle').innerText = `${currentChartScope === 'spot' ? '📈 Spot' : '📊 Option'}: ${targetSymbol} (${side || 'CE'})`;
@@ -2351,7 +2363,26 @@ HTML_TEMPLATE = """
                     grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { borderColor: '#30363d' },
-                    timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false }
+                    timeScale: { 
+                        borderColor: '#30363d', 
+                        timeVisible: true, 
+                        secondsVisible: false,
+                        tickMarkFormatter: (time, tickMarkType) => {
+                            const date = new Date(time * 1000);
+                            if (currentChartTf === 'day') {
+                                return date.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' });
+                            }
+                            return date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+                        }
+                    },
+                    localization: {
+                        locale: 'en-IN',
+                        dateFormat: 'yyyy-MM-dd',
+                        timeFormatter: (timestamp) => {
+                            const date = new Date(timestamp * 1000);
+                            return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+                        }
+                    }
                 });
 
                 candleSeriesInstance = tvChartInstance.addCandlestickSeries({
@@ -2362,49 +2393,82 @@ HTML_TEMPLATE = """
 
                 candleSeriesInstance.setData(data.candles);
 
-                // ── Render A, B, C, D Text Markers ──
+                // ── Anchor levels: engine-persisted preferred, fallback to A-time candle ──
                 const candles = data.candles || [];
+                const anchorDirection = (String(direction || '').toUpperCase() === 'BEAR') ? 'BEAR' : 'BULL';
+                let idxA = findClosestCandleIndex(candles, parseDateToUnix(candle_a_time));
+                let idxDcap = findClosestCandleIndex(candles, parseDateToUnix(entry_time));
+                if (idxDcap === -1) idxDcap = candles.length - 1;
+                if (idxA === -1 || idxA >= idxDcap) idxA = Math.max(0, idxDcap - 12);
+                let aHigh = candles[idxA] ? candles[idxA].high : 0;
+                let aLow = candles[idxA] ? candles[idxA].low : 0;
+                if (benchmark > 0) {
+                    if (anchorDirection === 'BEAR') {
+                        aLow = benchmark;
+                        if (anchor_floor > 0) aHigh = anchor_floor;
+                    } else {
+                        aHigh = benchmark;
+                        if (anchor_floor > 0) aLow = anchor_floor;
+                    }
+                }
+                const benchLabel = anchorDirection === 'BEAR' ? 'A.low' : 'A.high';
+                const benchEntry = (benchmark > 0) ? benchmark : (entry > 0 ? entry : (anchorDirection === 'BEAR' ? aLow : aHigh));
+
+                // ── Render A, B, C, D Sequence Markers (mirrors engine) ──
                 const markers = [];
                 if (candles.length > 0) {
-                    let idxA = findClosestCandleIndex(candles, parseDateToUnix(candle_a_time));
-                    let idxD = findClosestCandleIndex(candles, parseDateToUnix(entry_time));
-                    if (idxD === -1) idxD = candles.length - 1;
-                    if (idxA === -1 || idxA >= idxD) idxA = Math.max(0, idxD - 12);
-
-                    // B: Peak high candle between A and D
-                    let idxB = idxA;
-                    let maxH = candles[idxA].high;
-                    for (let i = idxA; i <= idxD; i++) {
-                        if (candles[i].high >= maxH) { maxH = candles[i].high; idxB = i; }
-                    }
-
-                    // C: Retest low candle between B and D
-                    let idxC = idxB;
-                    let minL = candles[idxB].low;
-                    for (let i = idxB; i <= idxD; i++) {
-                        if (candles[i].low <= minL) { minL = candles[i].low; idxC = i; }
+                    let idxB = -1, idxC = -1, idxD = -1, seqBreach = false;
+                    if (anchorDirection === 'BEAR') {
+                        // B: first candle after A closing below benchmark (A.low)
+                        for (let i = idxA + 1; i <= idxDcap; i++) { if (candles[i].close < aLow) { idxB = i; break; } }
+                        // C: retest candle holding below A.high (ceiling), dipping to/near benchmark
+                        if (idxB !== -1) {
+                            for (let i = idxB + 1; i <= idxDcap; i++) { if (candles[i].high >= aLow && candles[i].close < aHigh) { idxC = i; break; } }
+                        }
+                        // D: first red candle after C closing below benchmark
+                        if (idxC !== -1) {
+                            for (let i = idxC + 1; i <= idxDcap; i++) { if (candles[i].close < aLow && candles[i].close < candles[i].open) { idxD = i; break; } }
+                        }
+                        // Sequence integrity: no candle between A and D closed above A.high
+                        const scanEnd = idxD !== -1 ? idxD : idxDcap;
+                        for (let i = idxA + 1; i <= scanEnd; i++) { if (candles[i].close > aHigh) { seqBreach = true; break; } }
+                    } else {
+                        // B: first candle after A closing above benchmark A.high
+                        for (let i = idxA + 1; i <= idxDcap; i++) { if (candles[i].close > aHigh) { idxB = i; break; } }
+                        // C: first red retest candle after B dipping back to/near A.high while holding above A.low
+                        if (idxB !== -1) {
+                            for (let i = idxB + 1; i <= idxDcap; i++) { if (candles[i].close < candles[i].open && candles[i].low <= aHigh && candles[i].close > aLow) { idxC = i; break; } }
+                        }
+                        // D: first candle after C closing back above benchmark A.high
+                        if (idxC !== -1) {
+                            for (let i = idxC + 1; i <= idxDcap; i++) { if (candles[i].close > aHigh) { idxD = i; break; } }
+                        }
+                        // Sequence integrity: no candle between A and D closed below A.low
+                        const scanEnd = idxD !== -1 ? idxD : idxDcap;
+                        for (let i = idxA + 1; i <= scanEnd; i++) { if (candles[i].close < aLow) { seqBreach = true; break; } }
                     }
 
                     markers.push({ time: candles[idxA].time, position: 'belowBar', color: '#3fb950', shape: 'circle', text: 'A (Anchor)' });
-                    markers.push({ time: candles[idxB].time, position: 'aboveBar', color: '#58a6ff', shape: 'square', text: 'B (Swing High)' });
-                    if (idxC !== idxA && idxC !== idxD) {
-                        markers.push({ time: candles[idxC].time, position: 'belowBar', color: '#d29922', shape: 'circle', text: 'C (Retest)' });
+                    if (idxB !== -1) markers.push({ time: candles[idxB].time, position: 'aboveBar', color: '#58a6ff', shape: 'square', text: 'B (Breakout)' });
+                    if (idxC !== -1) markers.push({ time: candles[idxC].time, position: 'belowBar', color: '#d29922', shape: 'circle', text: 'C (Retest)' });
+                    if (idxD !== -1) markers.push({ time: candles[idxD].time, position: 'aboveBar', color: '#2ea043', shape: 'arrowUp', text: 'D (Confirm)' });
+                    if (seqBreach) {
+                        markers.push({ time: candles[idxD !== -1 ? idxD : idxDcap].time, position: 'belowBar', color: '#f85149', shape: 'circle', text: '⚠ Seq broken' });
                     }
-                    markers.push({ time: candles[idxD].time, position: 'aboveBar', color: '#2ea043', shape: 'arrowUp', text: 'D (Entry)' });
 
                     markers.sort((m1, m2) => m1.time - m2.time);
                     candleSeriesInstance.setMarkers(markers);
                 }
 
-                if (entry > 0) {
-                    candleSeriesInstance.createPriceLine({ price: entry, color: '#58a6ff', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `Entry: ${entry.toFixed(2)}` });
+                if (benchEntry > 0) {
+                    candleSeriesInstance.createPriceLine({ price: benchEntry, color: '#58a6ff', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `Entry (${benchLabel}): ${benchEntry.toFixed(2)}` });
                 }
                 if (sl > 0) {
-                    const slPct = entry > 0 ? (((sl - entry) / entry) * 100).toFixed(1) : '';
+                    const slPct = benchEntry > 0 ? (((sl - benchEntry) / benchEntry) * 100).toFixed(1) : '';
                     candleSeriesInstance.createPriceLine({ price: sl, color: '#f85149', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: `SL: ${sl.toFixed(2)} (${slPct}%)` });
                 }
                 if (t1 > 0) {
-                    const rrVal = (entry > 0 && sl > 0 && Math.abs(entry - sl) > 0) ? (Math.abs(t1 - entry) / Math.abs(entry - sl)).toFixed(2) : '';
+                    const rrVal = (benchEntry > 0 && sl > 0 && Math.abs(benchEntry - sl) > 0) ? (Math.abs(t1 - benchEntry) / Math.abs(benchEntry - sl)).toFixed(2) : '';
                     candleSeriesInstance.createPriceLine({ price: t1, color: '#3fb950', lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Solid, axisLabelVisible: true, title: `T1: ${t1.toFixed(2)} (RR: ${rrVal})` });
                 }
                 if (t2 > 0) {
@@ -2414,10 +2478,10 @@ HTML_TEMPLATE = """
                     candleSeriesInstance.createPriceLine({ price: t3, color: '#238636', lineWidth: 1, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: `T3: ${t3.toFixed(2)}` });
                 }
 
-                const rrText = (entry > 0 && sl > 0 && t1 > 0 && Math.abs(entry - sl) > 0) ? (Math.abs(t1 - entry) / Math.abs(entry - sl)).toFixed(2) : '-';
+                const rrText = (benchEntry > 0 && sl > 0 && t1 > 0 && Math.abs(benchEntry - sl) > 0) ? (Math.abs(t1 - benchEntry) / Math.abs(benchEntry - sl)).toFixed(2) : '-';
                 document.getElementById('modalTradeInfo').innerHTML = `
                     <div><b>Pattern:</b> <span style="color:#d29922;">${pattern || 'A-B-C-D'}</span></div>
-                    <div><b>Entry:</b> <span style="color:#58a6ff;">${entry ? entry.toFixed(2) : '-'}</span></div>
+                    <div><b>Entry (${benchLabel}):</b> <span style="color:#58a6ff;">${benchEntry ? benchEntry.toFixed(2) : '-'}</span></div>
                     <div><b>SL:</b> <span style="color:#f85149;">${sl ? sl.toFixed(2) : '-'}</span></div>
                     <div><b>T1:</b> <span style="color:#3fb950;">${t1 ? t1.toFixed(2) : '-'}</span></div>
                     <div><b>T2:</b> <span style="color:#2ea043;">${t2 ? t2.toFixed(2) : '-'}</span></div>

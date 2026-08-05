@@ -860,6 +860,9 @@ def scan_anchor_bcd_breakout(df_entry, df_anchor):
             "RR": round(rr, 2),
             "CandleTime": d_time_str,
             "CandleATime": a_time_str,
+            "Benchmark": benchmark,
+            "AnchorFloor": a_low,
+            "Direction": "BULL",
             "Stage_Status": stage_status,
             "Priority": priority_level,
             "d_idx": d_idx
@@ -1636,7 +1639,10 @@ def write_scan_display_data(staged, active, display_file, engine_name=None):
                 "rr": round(rr_num, 2),
                 "candle_a_time": clean_timestamp(t.get("candle_a_time") or t.get("CandleATime") or t.get("entry_time", "")),
                 "timeframe": t.get("timeframe", ""),
-                "candle_tf_time": t.get("candle_tf_time", "")
+                "candle_tf_time": t.get("candle_tf_time", ""),
+                "benchmark": t.get("benchmark"),
+                "anchor_floor": t.get("anchor_floor"),
+                "direction": t.get("direction", "BULL")
             }
         new_staged = [build_trade(t, t.get("pattern", "BE_ABCD"), t.get("entry_time", now_str), None, is_staged=True) for t in (staged or [])]
         carry_fwd = []
@@ -2037,7 +2043,9 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
                     "lot_size": config["lot_size"], "position_size": pos_size,
                     "pattern": result_ce["Pattern"], "timeframe": timeframe_entry, "side": "CE",
                     "strike_step": config["strike_step"], "entry_time": candle_time,
-                    "candle_a_time": candle_a_time
+                    "candle_a_time": candle_a_time,
+                    "benchmark": result_ce.get("Benchmark"), "anchor_floor": result_ce.get("AnchorFloor"),
+                    "direction": result_ce.get("Direction", "BULL")
                 }
                 trade_db.stage_cycle_trade(engine_name, trade_data)
                 trades.append(trade_data)
@@ -2075,7 +2083,9 @@ def scan_symbol(kite, symbol, config, from_entry, to_entry, from_anchor, to_anch
                     "lot_size": config["lot_size"], "position_size": pos_size,
                     "pattern": result_pe["Pattern"], "timeframe": timeframe_entry, "side": "PE",
                     "strike_step": config["strike_step"], "entry_time": candle_time,
-                    "candle_a_time": candle_a_time
+                    "candle_a_time": candle_a_time,
+                    "benchmark": result_pe.get("Benchmark"), "anchor_floor": result_pe.get("AnchorFloor"),
+                    "direction": result_pe.get("Direction", "BULL")
                 }
                 trade_db.stage_cycle_trade(engine_name, trade_data)
                 trades.append(trade_data)
@@ -2876,6 +2886,9 @@ def scan_anchor_bcd_breakout_bearish(df_entry, df_anchor):
             "RR": round(rr, 2),
             "A_Date": str(a_date),
             "D_Date": str(entry_candle.get('date', '')),
+            "Benchmark": a_low,
+            "AnchorFloor": a_high,
+            "Direction": "BEAR",
             "Stage_Status": stage_status,
             "Priority": priority_level,
             "d_idx": d_idx

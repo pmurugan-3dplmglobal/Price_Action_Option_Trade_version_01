@@ -2285,7 +2285,26 @@ HTML_TEMPLATE = """
                     grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
                     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
                     rightPriceScale: { borderColor: '#30363d' },
-                    timeScale: { borderColor: '#30363d', timeVisible: true, secondsVisible: false }
+                    timeScale: { 
+                        borderColor: '#30363d', 
+                        timeVisible: true, 
+                        secondsVisible: false,
+                        tickMarkFormatter: (time, tickMarkType) => {
+                            const date = new Date(time * 1000);
+                            if (currentChartTf === 'day') {
+                                return date.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short' });
+                            }
+                            return date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false });
+                        }
+                    },
+                    localization: {
+                        locale: 'en-IN',
+                        dateFormat: 'yyyy-MM-dd',
+                        timeFormatter: (timestamp) => {
+                            const date = new Date(timestamp * 1000);
+                            return date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+                        }
+                    }
                 });
 
                 candleSeriesInstance = tvChartInstance.addCandlestickSeries({

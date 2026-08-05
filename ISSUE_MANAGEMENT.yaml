@@ -4,7 +4,7 @@
 meta:
   system: Price Action Unified Strategy System
   version: Prod Code v02
-  last_updated: "2026-07-28"
+  last_updated: "2026-08-05"
   purpose: Document operational failures, root causes, regression fixes, and system enhancements.
 
 issues:
@@ -284,6 +284,46 @@ issues:
       - ISSUE_MANAGEMENT.yaml
     resolution: |
       Added /api/get-chart-data backend endpoint and TradingView Lightweight Charts pop-up modal (#chartModal) to both web dashboards. Renders candlestick series, overlay price lines (Entry, SL, T1, T2, T3), scope toggles, and direct Zerodha Kite links.
+    status: RESOLVED
+
+  - id: FEATURE-016
+    title: Chart Modal A-B-C-D Sequence Markers with Benchmark Entry Line (direction-aware)
+    severity: ENHANCEMENT
+    category: Dashboard UI Integration
+    date_reported: "2026-08-05"
+    symptom: |
+      Chart modal rendered only an A marker and drew the Entry price line at D's close / entry price, and B/C/D markers were computed from candle_a_time-derived levels instead of the engine's confirmed benchmark. For LL_Sweep setups (e.g. ITC26AUG290PE) the A-time candle (09:15 sweep) was an outlier (H=9.9) so B was never found even though the engine had confirmed a full A->B->C->D sequence.
+    root_cause: |
+      1. find_anchor_ll_sweep returns CandleATime = sweep/Low-2 candle (df.iloc[-4]) while the engine's benchmark = A.high at a_idx (a different candle). Re-deriving A.high from candle_a_time mismatched the engine's confirmed anchor.
+      2. The Entry price line used entry_spot (D's close) instead of the engine benchmark, and SL%/RR/footer math used the actual entry.
+      3. Marker detection was not direction-aware and had no BEAR mirror.
+    affected_files:
+      - common/trading_core.py
+      - Trade_Option/app_option_Trade.py
+      - Trade_Option/index_options_trade_engine.py
+      - Trade_Option/stock_options_trade_engine.py
+      - ISSUE_MANAGEMENT.yaml
+      - Trade_Option/Read_Me_Notes/FNO_Scanning_Workflow_Spec.md
+    resolution: |
+      1. Persisted benchmark (A.high for CE/BULL, A.low for PE/BEAR), anchor_floor (A.low BULL / A.high BEAR), and direction ("BULL"/"BEAR") end-to-end: scanners (scan_anchor_bcd_breakout / _bearish), scan_symbol trade_data, write_scan_display_data build_trade, and both engines' position dicts. All 10 staged Nifty 50 trades now carry the fields (e.g. ITC bench=5.0, floor=3.2).
+      2. Chart modal (app_option_Trade.py loadChartDataAndRender): Entry line now draws at the stored benchmark (label "Entry (A.high)"/"Entry (A.low)"), falling back to entry price when benchmark is absent (legacy data). SL%, T1 RR, and footer R:R are computed against the benchmark for strategy-consistent risk math.
+      3. Markers are direction-aware with a BEAR mirror: BULL B = first close > A.high, C = red retest dipping to/near A.high holding above A.low, D = close > A.high; BEAR B = first close < A.low, C = retest holding below A.high, D = red close < A.low. A "Seq broken" red marker fires when any candle between A and D breaches the anchor_floor (BULL: close < A.low; BEAR: close > A.high).
+      4. Both chart buttons (Scan tab + Positions tab) and Kite/DB merged position items pass benchmark/anchor_floor/direction into openChartModal.
+    status: RESOLVED
+
+  - id: FEATURE-017
+    title: Chart Modal parseDateToUnix Year/Day Swap Caused Missing Markers
+    severity: HIGH
+    category: Dashboard UI Bug
+    date_reported: "2026-08-05"
+    symptom: |
+      Chart markers (A/B/C/D) did not render because findClosestCandleIndex matched timestamps from 2009 instead of 2026.
+    root_cause: |
+      parseDateToUnix parsed the ISO date as day=dateParts[0] and year=dateParts[2] (e.g. 2026-08-03 -> day 2026, year 3), producing epoch values in 2009 that never matched the candle times.
+    affected_files:
+      - Trade_Option/app_option_Trade.py
+    resolution: |
+      Fixed parseDateToUnix to parse year=dateParts[0], month=dateParts[1], day=dateParts[2]. Markers now align to the correct candle timestamps.
     status: RESOLVED
 
 

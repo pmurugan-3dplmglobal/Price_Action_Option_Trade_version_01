@@ -35,7 +35,7 @@ architecture:
       trade_db.py: "Thread-safe JSON trade database, cycle staging, and executed pattern deduplication"
       Kite_Access_Token_gen.py: "Zerodha Kite OAuth access token generator CLI"
     Trade_Option:
-      app_option_Trade.py: "Options Dashboard (port 5050) with 1-Click BUY button on Scan Tab (/api/buy-scanned-trade)"
+      app_option_Trade.py: "Options Dashboard (port 5050) with 1-Click BUY button on Scan Tab (/api/buy-scanned-trade). Chart modal (/api/get-chart-data) renders direction-aware A-B-C-D markers + benchmark Entry line (A.high/A.low) + benchmark-based SL%/RR."
       index_options_trade_engine.py: "Intraday index options engine (NIFTY, BANKNIFTY, SENSEX with BFO exchange routing)"
       stock_options_trade_engine.py: "Nifty 50 stock options scanner & executor"
       automated_strategy_exporter.py: "Plan 1 Multi-Timeframe Automated Daily Exporter (Index: 3m/5m/15m, Stock Option: 15m/60m)"
@@ -267,6 +267,15 @@ pattern_shorthands:
     BEAR_STAR: "Shooting Star / Bearish Baby Setup (find_anchor_shooting_star_baby)"
     BEAR_HAR: "Bearish Harami Setup (find_anchor_bearish_harami)"
   csv_export_alignment: "CSV exports match UI display table 1-to-1 in column order, numeric rounding (2 decimal places), formatted DD-MM-YY HH:MM timestamps, Yes/No CarryForward, and explicit pattern shorthands"
+
+scan_display_anchor_fields:
+  description: "Engine-persisted anchor fields on every staged trade / position so the chart modal mirrors the engine's confirmed setup exactly"
+  benchmark: "Breakout threshold = A.high for CE/BULL, A.low for PE/BEAR. Chart Entry price line draws here (label 'Entry (A.high)' / 'Entry (A.low)')."
+  anchor_floor: "Sequence-integrity floor = A.low for BULL, A.high for BEAR. Breach triggers the chart 'Seq broken' marker."
+  direction: "\"BULL\" or \"BEAR\". Drives direction-aware A-B-C-D marker detection (BEAR is a mirrored mirror: B = Close < A.low, C = retest holding below A.high, D = red Close < A.low)."
+  flow: "scan_anchor_bcd_breakout / _bearish -> scan_symbol -> write_scan_display_data.build_trade -> staged JSON -> dashboard chart modal. Position dicts (incl. KITE_RECOVERED) persist them too."
+  chart_risk_math: "SL% / T1 RR / footer R:R computed against the benchmark (not the actual entry) for strategy-consistent risk math."
+  golden_rule: "UI MUST NOT re-derive A.high/A.low from candle_a_time (anchor detectors may return a different candle than the engine's a_idx benchmark). The engine's persisted benchmark is the single source of truth."
 
 sl_buffer_scaling:
   description: "Dynamic asset & price-tiered Stop Loss buffer (calculate_sl_buffer) to prevent SL inflation on cheap option contracts"

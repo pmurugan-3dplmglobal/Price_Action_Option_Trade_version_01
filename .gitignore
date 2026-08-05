@@ -7,3 +7,13 @@ input/kite_access_token.txt
 .DS_Store
 *.log
 scratch/
+
+# Image formats
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.ico
+*.webp
+*.tiff
